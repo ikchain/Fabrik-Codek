@@ -495,6 +495,29 @@ Fabrik-Codek integrates with any MCP-compatible agent — [Claude Code](https://
 
 You can also use the REST API directly (`/search`, `/graph/search`, `/ask`) for non-MCP integrations. The data flywheel captures how *you* work, and any agent can tap into that knowledge.
 
+### OpenClaw Integration
+
+Fabrik-Codek is available as an [OpenClaw skill on ClawHub](https://clawhub.com). Install it with:
+
+```
+/install fabrik-codek
+```
+
+Or configure manually in your `openclaw.json`:
+
+```json
+{
+  "mcpServers": {
+    "fabrik-codek": {
+      "command": "fabrik",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+The skill exposes all 5 MCP tools to your OpenClaw agent. See [`skills/fabrik-codek/SKILL.md`](skills/fabrik-codek/SKILL.md) for details.
+
 ## Contributing
 
 Contributions are welcome! Please:
