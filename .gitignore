@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+
+# Data (keep structure, ignore content)
+data/raw/*
+data/processed/*
+data/embeddings/*
+data/vectordb/
+data/graphdb/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/embeddings/.gitkeep
+!data/graphdb/.gitkeep
+!data/raw/training_pairs/
+
+# Models and cache
+models/
+*.gguf
+
+# Logs
+*.log
+logs/
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+
+# OS
+.DS_Store
+Thumbs.db
