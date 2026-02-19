@@ -412,3 +412,171 @@ class TestContextPaths:
         engine.add_entity(Entity(id="y", name="y", entity_type=EntityType.TECHNOLOGY))
         paths = engine.get_context_paths(["x", "y"])
         assert len(paths) == 0
+
+
+# --- Pruning ---
+
+
+class TestPruning:
+    def test_prune_isolated_entity(self, engine):
+        """Ghost node with no edges and low mentions is removed."""
+        engine.add_entity(Entity(
+            id="ghost", name="old_class", entity_type=EntityType.CONCEPT,
+            mention_count=1,
+        ))
+        result = engine.prune()
+        assert result["entities_removed"] == 1
+        assert engine.get_entity("ghost") is None
+
+    def test_prune_keeps_connected_entity(self, engine):
+        """Entity with edges is NOT removed even with low mentions."""
+        engine.add_entity(Entity(id="a", name="a", entity_type=EntityType.TECHNOLOGY, mention_count=1))
+        engine.add_entity(Entity(id="b", name="b", entity_type=EntityType.TECHNOLOGY, mention_count=1))
+        engine.add_relation(Relation(
+            source_id="a", target_id="b",
+            relation_type=RelationType.USES, weight=0.8,
+        ))
+        result = engine.prune()
+        assert result["entities_removed"] == 0
+        assert engine.get_entity("a") is not None
+        assert engine.get_entity("b") is not None
+
+    def test_prune_keeps_high_mention_isolate(self, engine):
+        """Isolated entity with high mention_count is preserved."""
+        engine.add_entity(Entity(
+            id="popular", name="popular", entity_type=EntityType.CONCEPT,
+            mention_count=5,
+        ))
+        result = engine.prune(min_mention_count=1)
+        assert result["entities_removed"] == 0
+        assert engine.get_entity("popular") is not None
+
+    def test_prune_low_weight_edges(self, engine):
+        """Edges below min_edge_weight are removed."""
+        engine.add_entity(Entity(id="a", name="a", entity_type=EntityType.TECHNOLOGY))
+        engine.add_entity(Entity(id="b", name="b", entity_type=EntityType.TECHNOLOGY))
+        engine.add_relation(Relation(
+            source_id="a", target_id="b",
+            relation_type=RelationType.RELATED_TO, weight=0.1,
+        ))
+        result = engine.prune(min_edge_weight=0.3)
+        assert result["edges_removed"] == 1
+        assert len(engine.get_relations("a", direction="out")) == 0
+
+    def test_prune_keeps_high_weight_edges(self, engine):
+        """Edges at or above min_edge_weight are kept."""
+        engine.add_entity(Entity(id="a", name="a", entity_type=EntityType.TECHNOLOGY))
+        engine.add_entity(Entity(id="b", name="b", entity_type=EntityType.TECHNOLOGY))
+        engine.add_relation(Relation(
+            source_id="a", target_id="b",
+            relation_type=RelationType.USES, weight=0.8,
+        ))
+        result = engine.prune(min_edge_weight=0.3)
+        assert result["edges_removed"] == 0
+        assert len(engine.get_relations("a", direction="out")) == 1
+
+    def test_prune_cascading_orphan(self, engine):
+        """Entities become orphans after their edges are pruned."""
+        engine.add_entity(Entity(id="a", name="a", entity_type=EntityType.TECHNOLOGY, mention_count=1))
+        engine.add_entity(Entity(id="b", name="b", entity_type=EntityType.TECHNOLOGY, mention_count=1))
+        engine.add_relation(Relation(
+            source_id="a", target_id="b",
+            relation_type=RelationType.RELATED_TO, weight=0.1,
+        ))
+        # Both entities only connected by a weak edge
+        result = engine.prune(min_edge_weight=0.3)
+        assert result["edges_removed"] == 1
+        assert result["entities_removed"] == 2
+
+    def test_prune_inferred_edges_removed_by_default(self, engine):
+        """Inferred edges are removed by default."""
+        engine.add_entity(Entity(id="a", name="a", entity_type=EntityType.TECHNOLOGY, mention_count=5))
+        engine.add_entity(Entity(id="b", name="b", entity_type=EntityType.TECHNOLOGY, mention_count=5))
+        engine._graph.add_edge(
+            "a", "b",
+            source_id="a", target_id="b",
+            relation_type=RelationType.DEPENDS_ON.value,
+            weight=0.2,
+            source_docs=["inferred:transitive"],
+            metadata={"inferred": True},
+        )
+        result = engine.prune(min_edge_weight=0.3)
+        assert result["edges_removed"] == 1
+
+    def test_prune_keep_inferred(self, engine):
+        """keep_inferred=True preserves inferred edges."""
+        engine.add_entity(Entity(id="a", name="a", entity_type=EntityType.TECHNOLOGY, mention_count=5))
+        engine.add_entity(Entity(id="b", name="b", entity_type=EntityType.TECHNOLOGY, mention_count=5))
+        engine._graph.add_edge(
+            "a", "b",
+            source_id="a", target_id="b",
+            relation_type=RelationType.DEPENDS_ON.value,
+            weight=0.2,
+            source_docs=["inferred:transitive"],
+            metadata={"inferred": True},
+        )
+        result = engine.prune(min_edge_weight=0.3, keep_inferred=True)
+        assert result["edges_removed"] == 0
+
+    def test_prune_dry_run_no_modification(self, engine):
+        """dry_run=True does not modify the graph."""
+        engine.add_entity(Entity(
+            id="ghost", name="ghost", entity_type=EntityType.CONCEPT, mention_count=1,
+        ))
+        result = engine.prune(dry_run=True)
+        assert result["entities_removed"] == 1
+        # Entity still exists
+        assert engine.get_entity("ghost") is not None
+
+    def test_prune_dry_run_reports_removed_items(self, engine):
+        """dry_run reports what would be removed."""
+        engine.add_entity(Entity(id="a", name="a", entity_type=EntityType.TECHNOLOGY, mention_count=1))
+        engine.add_entity(Entity(id="b", name="b", entity_type=EntityType.TECHNOLOGY, mention_count=1))
+        engine.add_relation(Relation(
+            source_id="a", target_id="b",
+            relation_type=RelationType.RELATED_TO, weight=0.1,
+        ))
+        result = engine.prune(dry_run=True)
+        assert result["edges_removed"] == 1
+        assert result["entities_removed"] == 2
+        assert len(result["removed_edges"]) == 1
+        assert len(result["removed_entities"]) == 2
+        # Still there
+        assert engine.get_entity("a") is not None
+
+    def test_prune_empty_graph(self, engine):
+        """Pruning an empty graph returns zero stats."""
+        result = engine.prune()
+        assert result["edges_removed"] == 0
+        assert result["entities_removed"] == 0
+        assert result["removed_edges"] == []
+        assert result["removed_entities"] == []
+
+    def test_prune_saves_correctly(self, tmp_graph_dir):
+        """Graph is consistent after prune + save + load."""
+        engine1 = GraphEngine(data_dir=tmp_graph_dir)
+        engine1.add_entity(Entity(id="keep", name="keep", entity_type=EntityType.TECHNOLOGY, mention_count=5))
+        engine1.add_entity(Entity(id="ghost", name="ghost", entity_type=EntityType.CONCEPT, mention_count=1))
+        engine1.prune()
+        engine1.save()
+
+        engine2 = GraphEngine(data_dir=tmp_graph_dir)
+        engine2.load()
+        assert engine2.get_entity("keep") is not None
+        assert engine2.get_entity("ghost") is None
+
+    def test_prune_custom_thresholds(self, engine):
+        """Custom thresholds change what gets pruned."""
+        engine.add_entity(Entity(id="a", name="a", entity_type=EntityType.TECHNOLOGY, mention_count=3))
+        engine.add_entity(Entity(id="b", name="b", entity_type=EntityType.TECHNOLOGY, mention_count=3))
+        engine.add_relation(Relation(
+            source_id="a", target_id="b",
+            relation_type=RelationType.USES, weight=0.4,
+        ))
+        # Default threshold (0.3) keeps the edge
+        result_default = engine.prune(dry_run=True)
+        assert result_default["edges_removed"] == 0
+
+        # Higher threshold removes the edge
+        result_strict = engine.prune(min_edge_weight=0.5, dry_run=True)
+        assert result_strict["edges_removed"] == 1

@@ -292,6 +292,99 @@ class TestGraph:
         assert result.exit_code == 0
         assert "No hay Knowledge Graph" in result.output
 
+    def test_graph_prune_dry_run(self):
+        """graph prune --dry-run previews without modifying."""
+        mock_engine = MagicMock()
+        mock_engine.load.return_value = True
+        mock_engine.get_stats.return_value = {
+            "entity_count": 100, "edge_count": 200,
+            "connected_components": 5, "graph_path": "/tmp/g.json",
+            "entity_types": {}, "relation_types": {},
+        }
+        mock_engine.prune.return_value = {
+            "edges_removed": 10,
+            "entities_removed": 3,
+            "removed_edges": [],
+            "removed_entities": [
+                {"id": "x", "name": "old_class", "type": "concept"},
+            ],
+        }
+
+        with patch("src.knowledge.graph_engine.GraphEngine", return_value=mock_engine):
+            result = runner.invoke(app, ["graph", "prune", "--dry-run"])
+
+        assert result.exit_code == 0
+        assert "dry-run" in result.output.lower() or "Preview" in result.output
+        assert "10" in result.output
+        assert "3" in result.output
+        mock_engine.save.assert_not_called()
+
+    def test_graph_prune_executes(self):
+        """graph prune modifies and saves the graph."""
+        mock_engine = MagicMock()
+        mock_engine.load.return_value = True
+        mock_engine.get_stats.return_value = {
+            "entity_count": 100, "edge_count": 200,
+            "connected_components": 5, "graph_path": "/tmp/g.json",
+            "entity_types": {}, "relation_types": {},
+        }
+        mock_engine.prune.return_value = {
+            "edges_removed": 5,
+            "entities_removed": 2,
+            "removed_edges": [],
+            "removed_entities": [],
+        }
+
+        with patch("src.knowledge.graph_engine.GraphEngine", return_value=mock_engine):
+            result = runner.invoke(app, ["graph", "prune"])
+
+        assert result.exit_code == 0
+        assert "Prune Complete" in result.output
+        mock_engine.save.assert_called_once()
+
+    def test_graph_prune_no_graph(self):
+        """graph prune shows error when no graph built."""
+        mock_engine = MagicMock()
+        mock_engine.load.return_value = False
+
+        with patch("src.knowledge.graph_engine.GraphEngine", return_value=mock_engine):
+            result = runner.invoke(app, ["graph", "prune"])
+
+        assert result.exit_code == 0
+        assert "No hay Knowledge Graph" in result.output
+
+    def test_graph_prune_with_custom_thresholds(self):
+        """graph prune passes custom thresholds to engine."""
+        mock_engine = MagicMock()
+        mock_engine.load.return_value = True
+        mock_engine.get_stats.return_value = {
+            "entity_count": 50, "edge_count": 100,
+            "connected_components": 3, "graph_path": "/tmp/g.json",
+            "entity_types": {}, "relation_types": {},
+        }
+        mock_engine.prune.return_value = {
+            "edges_removed": 0,
+            "entities_removed": 0,
+            "removed_edges": [],
+            "removed_entities": [],
+        }
+
+        with patch("src.knowledge.graph_engine.GraphEngine", return_value=mock_engine):
+            result = runner.invoke(app, [
+                "graph", "prune",
+                "--min-mentions", "3",
+                "--min-weight", "0.5",
+                "--keep-inferred",
+            ])
+
+        assert result.exit_code == 0
+        mock_engine.prune.assert_called_once_with(
+            min_mention_count=3,
+            min_edge_weight=0.5,
+            keep_inferred=True,
+            dry_run=False,
+        )
+
     def test_graph_unknown_action(self):
         """graph with unknown action shows usage hint."""
         mock_engine = MagicMock()
@@ -300,7 +393,7 @@ class TestGraph:
             result = runner.invoke(app, ["graph", "unknown_action"])
 
         assert result.exit_code == 0
-        assert "graph build" in result.output or "graph search" in result.output
+        assert "graph build" in result.output or "graph prune" in result.output
 
 
 # ===================================================================
@@ -690,7 +783,7 @@ class TestFinetune:
         """finetune --dry-run shows data stats without training."""
         mock_stats = {
             "sessions_processed": 20,
-            "total_training_pairs": 8955,
+            "total_training_pairs": 5000,
         }
 
         with patch(
@@ -701,7 +794,7 @@ class TestFinetune:
 
         assert result.exit_code == 0
         assert "Fine-tuning Data" in result.output
-        assert "8955" in result.output
+        assert "5000" in result.output
         assert "sin --dry-run" in result.output
 
     def test_finetune_dry_run_with_options(self):

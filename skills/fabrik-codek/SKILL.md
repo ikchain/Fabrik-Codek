@@ -12,6 +12,10 @@ metadata:
     homepage: https://github.com/ikchain/Fabrik-Codek
     os: [macos, linux]
     emoji: "🧠"
+    configPaths:
+      - "~/.claude/projects/*"
+      - "./data/embeddings/"
+      - "./data/graphdb/"
     install:
       - kind: pip
         package: fabrik-codek
@@ -92,6 +96,7 @@ Check system health: Ollama availability, RAG engine, knowledge graph, and datal
 - **100% local**: All data stays on your machine. No external API calls, no telemetry, no cloud dependencies.
 - **No credentials required**: Fabrik-Codek connects only to your local Ollama instance (`localhost:11434`).
 - **External endpoints**: None. This skill does not contact any external services.
-- **Data storage**: All indexed data is stored locally in `./data/` (vector embeddings in `./data/embeddings/`, knowledge graph in `./data/graphdb/`). Nothing is uploaded anywhere.
-- **Session reading**: The `fabrik learn` command reads Claude Code transcript files from `~/.claude/projects/` — these are local JSON files already on your disk. This is an opt-in action triggered manually by the user, not automatic background surveillance.
-- **Source code**: Fully open source at [github.com/ikchain/Fabrik-Codek](https://github.com/ikchain/Fabrik-Codek) (MIT license). The `pip install` pulls from this public repository.
+- **Data paths**: Reads transcript files from `~/.claude/projects/*/` (local JSON already on disk). Writes indexed data to `./data/embeddings/` (vector DB) and `./data/graphdb/` (knowledge graph). Both paths are declared in the skill metadata.
+- **Session reading**: The `fabrik learn` command is opt-in — triggered manually by the user, not automatic background surveillance. Transcripts may contain sensitive session data; review before indexing.
+- **Network exposure**: Default transport is `stdio` (no network). SSE transport (`--transport sse`) binds to `127.0.0.1` by default. If you change the bind address, ensure proper firewall/ACL rules to avoid exposing indexed data over the network.
+- **Install source**: Fully open source at [github.com/ikchain/Fabrik-Codek](https://github.com/ikchain/Fabrik-Codek) (MIT license). Verify the pip package source matches the GitHub repository before installing.

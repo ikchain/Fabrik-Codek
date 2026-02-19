@@ -408,6 +408,10 @@ def graph(
         False, "--include-transcripts",
         help="Include reasoning from Claude Code session transcripts",
     ),
+    min_mentions: int = typer.Option(1, "--min-mentions", help="Min mention_count to keep isolated entities"),
+    min_weight: float = typer.Option(0.3, "--min-weight", help="Min edge weight to keep"),
+    keep_inferred: bool = typer.Option(False, "--keep-inferred", help="Preserve inferred edges during prune"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview prune without modifying"),
 ):
     """Knowledge Graph - build, search, and inspect."""
     from src.knowledge.graph_engine import GraphEngine
@@ -544,8 +548,44 @@ def graph(
         table.add_row("PART_OF inferidos", str(stats["part_of_inferred"]))
         console.print(table)
 
+    elif action == "prune":
+        if not engine.load():
+            console.print("[yellow]No hay Knowledge Graph construido.[/yellow]")
+            console.print("[dim]Ejecuta: fabrik graph build[/dim]")
+            return
+
+        before_stats = engine.get_stats()
+        result = engine.prune(
+            min_mention_count=min_mentions,
+            min_edge_weight=min_weight,
+            keep_inferred=keep_inferred,
+            dry_run=dry_run,
+        )
+
+        if not dry_run:
+            engine.save()
+
+        title = "[bold yellow]Graph Prune Preview (dry-run)[/bold yellow]" if dry_run else "[bold green]Graph Prune Complete[/bold green]"
+        console.print(Panel.fit(title))
+
+        table = Table()
+        table.add_column("Metrica", style="cyan")
+        table.add_column("Valor", style="green")
+        table.add_row("Entidades antes", str(before_stats["entity_count"]))
+        table.add_row("Edges antes", str(before_stats["edge_count"]))
+        table.add_row("Edges eliminados", str(result["edges_removed"]))
+        table.add_row("Entidades eliminadas", str(result["entities_removed"]))
+        console.print(table)
+
+        if dry_run and result["removed_entities"]:
+            console.print("\n[bold]Entidades a eliminar:[/bold]")
+            for ent in result["removed_entities"][:20]:
+                console.print(f"  [dim]{ent['name']}[/dim] ({ent['type']})")
+            if len(result["removed_entities"]) > 20:
+                console.print(f"  [dim]... y {len(result['removed_entities']) - 20} mas[/dim]")
+
     else:
-        console.print("[yellow]Uso: graph build | graph search -q 'query' | graph stats | graph complete[/yellow]")
+        console.print("[yellow]Uso: graph build | graph search -q 'query' | graph stats | graph complete | graph prune[/yellow]")
 
 
 @app.command()
@@ -643,7 +683,7 @@ def finetune(
     if max_samples:
         cmd.extend(["--max-samples", str(max_samples)])
 
-    subprocess.run(cmd)
+    subprocess.run(cmd, cwd=str(Path(__file__).parent.parent.parent))
 
 
 @app.command()

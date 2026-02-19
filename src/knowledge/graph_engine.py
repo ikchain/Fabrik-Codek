@@ -361,6 +361,91 @@ class GraphEngine:
 
         return stats
 
+    # --- Pruning ---
+
+    def prune(
+        self,
+        min_mention_count: int = 1,
+        min_edge_weight: float = 0.3,
+        keep_inferred: bool = False,
+        dry_run: bool = False,
+    ) -> dict:
+        """Remove ghost nodes and low-quality edges from the graph.
+
+        Three-step process:
+        1. Find edges with weight < min_edge_weight
+        2. Find isolated entities (0 remaining edges) with mention_count <= min_mention_count
+        3. Remove them (unless dry_run)
+
+        Args:
+            min_mention_count: Entities with mention_count <= this AND 0 edges are removed.
+            min_edge_weight: Edges with weight below this are removed.
+            keep_inferred: If True, preserve inferred (transitive) edges.
+            dry_run: If True, compute stats without modifying the graph.
+
+        Returns:
+            Stats dict with edges_removed, entities_removed, removed_edges, removed_entities.
+        """
+        # Step 1: Find edges to remove
+        edges_to_remove = []
+        for src, tgt, data in self._graph.edges(data=True):
+            if data.get("weight", 0.5) < min_edge_weight:
+                if keep_inferred and data.get("metadata", {}).get("inferred"):
+                    continue
+                edges_to_remove.append((src, tgt))
+
+        # Step 2: Find isolated entities after edge removal
+        # Build a set of edges that will survive
+        surviving_edges: set[tuple[str, str]] = set()
+        for src, tgt in self._graph.edges():
+            if (src, tgt) not in set(edges_to_remove):
+                surviving_edges.add((src, tgt))
+
+        # Compute degree for each entity excluding removed edges
+        degree: dict[str, int] = defaultdict(int)
+        for src, tgt in surviving_edges:
+            degree[src] += 1
+            degree[tgt] += 1
+
+        entities_to_remove = []
+        for eid, entity in self._entities.items():
+            if degree[eid] == 0 and entity.mention_count <= min_mention_count:
+                entities_to_remove.append(eid)
+
+        # Build result
+        removed_edges_info = [
+            {"source": src, "target": tgt, "weight": self._graph.edges[src, tgt].get("weight", 0)}
+            for src, tgt in edges_to_remove
+        ]
+        removed_entities_info = [
+            {"id": eid, "name": self._entities[eid].name, "type": self._entities[eid].entity_type.value}
+            for eid in entities_to_remove
+        ]
+
+        stats = {
+            "edges_removed": len(edges_to_remove),
+            "entities_removed": len(entities_to_remove),
+            "removed_edges": removed_edges_info,
+            "removed_entities": removed_entities_info,
+        }
+
+        # Step 3: Apply changes
+        if not dry_run:
+            for src, tgt in edges_to_remove:
+                self._graph.remove_edge(src, tgt)
+            for eid in entities_to_remove:
+                self._graph.remove_node(eid)
+                del self._entities[eid]
+
+            if edges_to_remove or entities_to_remove:
+                logger.info(
+                    "graph_pruned",
+                    edges_removed=len(edges_to_remove),
+                    entities_removed=len(entities_to_remove),
+                )
+
+        return stats
+
     # --- Persistence ---
 
     def save(self) -> None:
