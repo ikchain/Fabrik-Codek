@@ -4,7 +4,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests: 413](https://img.shields.io/badge/tests-413%20passing-brightgreen.svg)]()
+[![Tests: 455](https://img.shields.io/badge/tests-455%20passing-brightgreen.svg)]()
 
 Fabrik-Codek is a local AI development assistant that works with **any model via Ollama** (Qwen, Llama, DeepSeek, Codestral, Phi, Mistral...) and combines hybrid RAG (vector + knowledge graph) to provide context-aware coding assistance. It features a CLI, a REST API, and a continuous data flywheel that improves over time. No vendor lock-in — switch models with a flag.
 
@@ -127,52 +127,28 @@ Unlike frameworks that only describe cognitive architectures in papers, Fabrik-C
 
 ## Quick Start
 
-### Prerequisites
-
-- Python 3.11+
-- [Ollama](https://ollama.ai/) running locally
-- A Qwen model pulled in Ollama (e.g., `ollama pull qwen2.5-coder:7b`)
-
-### Installation
-
 ```bash
 git clone https://github.com/ikchain/Fabrik-Codek.git
 cd fabrik-codek
-
-# Install dependencies
 pip install -e ".[dev]"
-
-# Copy and configure environment
-cp .env.example .env
-# Edit .env with your preferred settings
-
-# Verify installation
-fabrik status
+fabrik init
 ```
 
-### First Run
+`fabrik init` checks your Python version, detects Ollama, creates a `.env` config, sets up data directories, and downloads the required models. After that you're ready:
 
 ```bash
-# Start Ollama (if not running)
-ollama serve
-
-# Interactive chat
-fabrik chat
-
-# Ask a single question
-fabrik ask "How do I implement a repository pattern in Python?"
-
-# Ask with RAG context
-fabrik ask "What's the best way to handle database connections?" --rag
-
-# Ask with hybrid RAG (vector + graph)
-fabrik ask "Explain the relationship between FastAPI and Pydantic" --graph
+fabrik chat                    # Interactive chat
+fabrik ask "How do I implement a repository pattern?" --rag   # Single question with RAG
+fabrik status                  # Check system health
 ```
+
+> **Prerequisite**: [Ollama](https://ollama.ai/) must be installed and running (`ollama serve`). Fabrik-Codek works with any Ollama model — Qwen, Llama, DeepSeek, Codestral, and more.
 
 ## CLI Reference
 
 | Command | Description |
 |---------|-------------|
+| `fabrik init` | Initialize: check deps, create config, download models |
 | `fabrik chat` | Interactive chat with the assistant |
 | `fabrik ask "..."` | Ask a single question |
 | `fabrik ask "..." --rag` | Ask with vector RAG context |

@@ -762,6 +762,146 @@ def status():
 
 
 @app.command()
+def init(
+    skip_models: bool = typer.Option(False, "--skip-models", help="Skip downloading Ollama models"),
+):
+    """Initialize Fabrik-Codek: check dependencies, create config, download models."""
+    import shutil
+    import subprocess
+    import sys
+    import urllib.request
+
+    console.print(Panel.fit(
+        "[bold blue]Fabrik-Codek Setup[/bold blue] - Claude's Little Brother",
+        subtitle="Initializing...",
+    ))
+    console.print()
+
+    errors = []
+
+    # 1. Check Python version
+    py_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    if sys.version_info >= (3, 11):
+        console.print(f"[green]✓[/green] Python {py_version}")
+    else:
+        console.print(f"[red]✗[/red] Python {py_version} (3.11+ required)")
+        errors.append("Python 3.11+ is required")
+
+    # 2. Check Ollama
+    ollama_installed = shutil.which("ollama") is not None
+    ollama_running = False
+
+    if ollama_installed:
+        console.print("[green]✓[/green] Ollama installed")
+        try:
+            req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                ollama_running = resp.status == 200
+        except Exception:
+            ollama_running = False
+
+        if ollama_running:
+            console.print("[green]✓[/green] Ollama server running")
+        else:
+            console.print("[yellow]![/yellow] Ollama not running. Start with: [bold]ollama serve[/bold]")
+    else:
+        console.print("[yellow]![/yellow] Ollama not installed")
+        console.print("  Install: [bold]curl -fsSL https://ollama.com/install.sh | sh[/bold]")
+
+    # 3. Create .env if not exists
+    console.print()
+    from src.config.settings import Settings
+
+    project_root = Path(__file__).parent.parent.parent
+    env_file = project_root / ".env"
+    env_example = project_root / ".env.example"
+
+    if env_file.exists():
+        console.print("[green]✓[/green] .env file exists")
+    elif env_example.exists():
+        shutil.copy2(env_example, env_file)
+        console.print("[green]✓[/green] .env created from .env.example")
+    else:
+        env_file.write_text(
+            "# Fabrik-Codek Configuration\n"
+            "FABRIK_OLLAMA_HOST=http://localhost:11434\n"
+            "FABRIK_DEFAULT_MODEL=qwen2.5-coder:7b\n"
+            "FABRIK_FLYWHEEL_ENABLED=true\n"
+            "FABRIK_LOG_LEVEL=INFO\n"
+        )
+        console.print("[green]✓[/green] .env file created")
+
+    # 4. Create data directories
+    data_dir = project_root / "data"
+    dirs_created = 0
+    for subdir in ["raw", "processed", "embeddings", "raw/interactions", "raw/training_pairs"]:
+        d = data_dir / subdir
+        if not d.exists():
+            d.mkdir(parents=True, exist_ok=True)
+            dirs_created += 1
+
+    if dirs_created > 0:
+        console.print(f"[green]✓[/green] Data directories created ({dirs_created} new)")
+    else:
+        console.print("[green]✓[/green] Data directories exist")
+
+    # 5. Download models if Ollama is running
+    if ollama_running and not skip_models:
+        console.print()
+        models_to_check = ["qwen2.5-coder:7b", "nomic-embed-text"]
+
+        for model_name in models_to_check:
+            # Check if model already exists
+            try:
+                result = subprocess.run(
+                    ["ollama", "list"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if model_name in result.stdout:
+                    console.print(f"[green]✓[/green] {model_name} available")
+                    continue
+            except Exception:
+                pass
+
+            console.print(f"[yellow]![/yellow] Downloading {model_name}...")
+            try:
+                subprocess.run(
+                    ["ollama", "pull", model_name],
+                    timeout=600,
+                    check=True,
+                )
+                console.print(f"[green]✓[/green] {model_name} downloaded")
+            except subprocess.TimeoutExpired:
+                console.print(f"[red]✗[/red] {model_name} download timed out")
+            except subprocess.CalledProcessError:
+                console.print(f"[red]✗[/red] Failed to download {model_name}")
+    elif not ollama_running and not skip_models:
+        console.print()
+        console.print("[yellow]![/yellow] Skipping model download (Ollama not running)")
+        console.print("  After starting Ollama, run:")
+        console.print("    [bold]ollama pull qwen2.5-coder:7b[/bold]")
+        console.print("    [bold]ollama pull nomic-embed-text[/bold]")
+
+    # 6. Summary
+    console.print()
+    if errors:
+        console.print(Panel.fit(
+            "[bold red]Setup incomplete[/bold red]\n" +
+            "\n".join(f"  • {e}" for e in errors),
+        ))
+        raise typer.Exit(code=1)
+
+    console.print(Panel.fit(
+        "[bold green]Setup Complete![/bold green]\n\n"
+        "  [bold]fabrik status[/bold]     Check system health\n"
+        "  [bold]fabrik chat[/bold]       Start interactive chat\n"
+        "  [bold]fabrik ask \"...\"[/bold]  Ask a single question\n"
+        "  [bold]fabrik mcp[/bold]        Start as MCP server",
+        subtitle="Ready to go",
+    ))
+
+
+@app.command()
 def mcp(
     transport: str = typer.Option("stdio", "--transport", "-t", help="Transport: stdio or sse"),
     port: Optional[int] = typer.Option(None, "--port", "-p", help="Port for SSE transport"),

@@ -749,6 +749,87 @@ class TestFinetune:
 
 
 # ===================================================================
+# TestInit
+# ===================================================================
+
+class TestInit:
+    """Tests for the ``init`` command."""
+
+    def test_init_help(self):
+        """init --help shows initialization description."""
+        result = runner.invoke(app, ["init", "--help"])
+        assert result.exit_code == 0
+        assert "Initialize" in result.output or "init" in result.output
+
+    @patch("shutil.which", return_value="/usr/bin/ollama")
+    @patch("urllib.request.urlopen")
+    @patch("subprocess.run")
+    def test_init_full_setup(self, mock_subproc, mock_urlopen, mock_which, tmp_path):
+        """init runs full setup when Ollama is available."""
+        # Mock Ollama running
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        # Mock ollama list showing models exist
+        mock_subproc.return_value = MagicMock(
+            stdout="qwen2.5-coder:7b\nnomic-embed-text\n",
+            returncode=0,
+        )
+
+        # Use tmp dir as project root
+        env_example = tmp_path / ".env.example"
+        env_example.write_text("FABRIK_DEFAULT_MODEL=qwen2.5-coder:7b\n")
+
+        with patch("src.interfaces.cli.Path") as mock_path_cls:
+            # __file__ resolution chain: cli.py -> interfaces -> src -> project_root
+            mock_file = tmp_path / "src" / "interfaces" / "cli.py"
+            mock_path_cls.__file__ = str(mock_file)
+            mock_path_cls.return_value = mock_path_cls
+
+            # Simpler approach: patch at module level
+            with patch.object(Path, '__new__', wraps=Path.__new__):
+                result = runner.invoke(app, ["init", "--skip-models"])
+
+        assert result.exit_code == 0
+        assert "Fabrik-Codek Setup" in result.output
+        assert "Ollama installed" in result.output
+
+    @patch("shutil.which", return_value=None)
+    def test_init_no_ollama(self, mock_which, tmp_path):
+        """init warns when Ollama is not installed."""
+        result = runner.invoke(app, ["init", "--skip-models"])
+        assert result.exit_code == 0
+        assert "Ollama not installed" in result.output
+
+    @patch("shutil.which", return_value="/usr/bin/ollama")
+    @patch("urllib.request.urlopen", side_effect=Exception("Connection refused"))
+    def test_init_ollama_not_running(self, mock_urlopen, mock_which):
+        """init warns when Ollama is installed but not running."""
+        result = runner.invoke(app, ["init", "--skip-models"])
+        assert result.exit_code == 0
+        assert "Ollama installed" in result.output
+        assert "not running" in result.output
+
+    def test_init_skip_models_flag(self):
+        """init --skip-models skips model download."""
+        with patch("shutil.which", return_value="/usr/bin/ollama"):
+            with patch("urllib.request.urlopen") as mock_url:
+                mock_resp = MagicMock()
+                mock_resp.status = 200
+                mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+                mock_resp.__exit__ = MagicMock(return_value=False)
+                mock_url.return_value = mock_resp
+
+                result = runner.invoke(app, ["init", "--skip-models"])
+
+        assert result.exit_code == 0
+        assert "Setup Complete" in result.output
+
+
+# ===================================================================
 # TestMCP
 # ===================================================================
 
