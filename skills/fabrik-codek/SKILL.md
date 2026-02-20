@@ -1,7 +1,7 @@
 ---
 name: fabrik-codek
-description: "Cognitive architecture for developers: three-tier hybrid retrieval (vector + knowledge graph + full-text search) that learns from your coding sessions and grows smarter over time. Connects any Ollama model to your accumulated project knowledge. 100% local, zero cloud dependencies."
-version: 1.3.0
+description: "Cognitive architecture for developers: three-tier hybrid retrieval (vector + knowledge graph + full-text search) with personal profiling that learns your stack, architecture, and tooling preferences. Connects any Ollama model to your accumulated project knowledge. 100% local, zero cloud dependencies."
+version: 1.4.0
 homepage: https://github.com/ikchain/Fabrik-Codek
 user-invocable: true
 metadata:
@@ -83,6 +83,11 @@ Get statistics about the knowledge graph: entity counts, relationship types, and
 
 ### fabrik_status
 Check system health: Ollama availability, RAG engine, knowledge graph, full-text search, and datalake status.
+
+### fabrik_profile
+Build or view your personal profile. The profile analyzes your datalake and generates behavioral system prompt instructions so the LLM responds using your actual stack and preferences.
+
+Example: "Build my profile" or "Show my profile"
 
 ## When to Use
 
