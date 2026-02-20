@@ -4,7 +4,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests: 527](https://img.shields.io/badge/tests-527%20passing-brightgreen.svg)]()
+[![Tests: 546](https://img.shields.io/badge/tests-546%20passing-brightgreen.svg)]()
 
 Fabrik-Codek is a local AI development assistant that works with **any model via Ollama** (Qwen, Llama, DeepSeek, Codestral, Phi, Mistral...) and combines three-tier hybrid retrieval (vector + knowledge graph + full-text search) to provide context-aware coding assistance. It features a CLI, a REST API, and a continuous data flywheel that improves over time. No vendor lock-in — switch models with a flag.
 
@@ -19,6 +19,7 @@ graph TB
 
     subgraph Core
         LLM[LLM Client - Ollama]
+        Profile[Personal Profile]
     end
 
     subgraph Knowledge
@@ -35,10 +36,13 @@ graph TB
         Logger[Quality Logger]
     end
 
+    CLI --> Profile
     CLI --> LLM
     CLI --> Hybrid
+    API --> Profile
     API --> LLM
     API --> Hybrid
+    Profile --> LLM
 
     Hybrid --> RAG
     Hybrid --> Graph
@@ -65,6 +69,7 @@ graph TB
 - **Extraction Pipeline**: 6-step pipeline (training pairs, decisions, learnings, auto-captures, enriched captures, transcripts)
 - **Graph Completion**: Infers transitive relationships to densify the knowledge graph
 - **Quality-Gated Logger**: Rejects low-quality data to prevent model degradation
+- **Personal Profile**: Domain-agnostic user profiling that analyzes your datalake and generates behavioral instructions for the LLM — the model learns your stack, architecture, and tooling preferences automatically
 
 ## Cognitive Architecture
 
@@ -127,6 +132,33 @@ graph LR
 | **Action** | Interacting with the developer | CLI (Typer + Rich) + REST API (FastAPI) |
 
 Unlike frameworks that only describe cognitive architectures in papers, Fabrik-Codek is a **working implementation** — it captures how you work, builds a knowledge graph from your accumulated experience, and feeds that context back into every query.
+
+## Personal Profile
+
+The Personal Profile analyzes your datalake and generates **behavioral instructions** that guide the LLM — so the model responds using your actual stack, architecture, and tooling preferences.
+
+```bash
+fabrik profile build   # Analyze datalake, build profile
+fabrik profile show    # View current profile
+```
+
+**How it works:**
+1. **DatalakeAnalyzer** scans training pairs (categories, tags) and auto-captures (file extensions, projects, tools)
+2. **ProfileBuilder** detects your domain, extracts framework/architecture/infrastructure preferences, and computes topic weights
+3. **System prompt injection** — every `fabrik ask` and `fabrik chat` call passes the profile as a behavioral system prompt
+
+**Example output** (from a real datalake with ~28k entries):
+
+```
+You are assisting a software development professional.
+Use Python for code examples.
+Prefer FastAPI with async/await and Pydantic.
+Follow DDD and hexagonal architecture.
+Deploy with Docker, Kubernetes, Terraform.
+Build AI agents and RAG pipelines.
+```
+
+**Domain-agnostic by design.** Software development is the first implemented domain, but the architecture supports any profession. A lawyer's datalake with civil law cases would produce a legal profile. Adding a new domain requires implementing a `_detect_<domain>_patterns()` method (~30 lines).
 
 ## Quick Start
 

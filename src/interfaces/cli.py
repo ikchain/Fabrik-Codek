@@ -61,6 +61,13 @@ def chat(
                 console.print("[dim]Run: ollama serve[/dim]")
                 return
 
+            # Inject personal profile into system prompt
+            from src.core.personal_profile import get_active_profile
+            active_profile = get_active_profile()
+            profile_system = active_profile.to_system_prompt()
+            if not system and profile_system:
+                messages.insert(0, {"role": "system", "content": profile_system})
+
             while True:
                 try:
                     user_input = session.prompt("\n[You] → ")
@@ -128,6 +135,11 @@ def ask(
     context = ""
     final_prompt = prompt
 
+    # Inject personal profile into system prompt
+    from src.core.personal_profile import get_active_profile
+    active_profile = get_active_profile()
+    profile_system = active_profile.to_system_prompt()
+
     if context_file and context_file.exists():
         context = context_file.read_text()
         final_prompt = f"Context:\n```\n{context}\n```\n\nQuestion: {prompt}"
@@ -179,7 +191,7 @@ Answer using the context when relevant."""
                 transient=True,
             ) as progress:
                 progress.add_task("Processing...", total=None)
-                response = await client.generate(final_prompt)
+                response = await client.generate(final_prompt, system=profile_system)
 
             console.print(Markdown(response.content))
             console.print(f"\n[dim]({response.tokens_used} tokens, {response.latency_ms:.0f}ms)[/dim]")
@@ -1068,6 +1080,70 @@ def fulltext(
         console.print(f"[red]Unknown action:[/red] {action}")
         console.print("Available: status, index, search")
         raise typer.Exit(1)
+
+
+@app.command()
+def profile(
+    action: str = typer.Argument("show", help="Action: show, build"),
+):
+    """Personal profile - show or rebuild from datalake."""
+    from src.config import settings
+    from src.core.personal_profile import ProfileBuilder, load_profile
+
+    profile_path = settings.data_dir / "profile" / "personal_profile.json"
+
+    if action == "show":
+        p = load_profile(profile_path)
+        if p.domain == "unknown":
+            console.print("[yellow]No profile built yet.[/yellow]")
+            console.print("[dim]Run: fabrik profile build[/dim]")
+            return
+
+        domain_display = p.domain.replace("_", " ").title()
+        console.print(
+            Panel.fit(
+                f"[bold]Personal Profile[/bold] — {domain_display}",
+            )
+        )
+        table = Table()
+        table.add_column("Field", style="cyan")
+        table.add_column("Value", style="green")
+        table.add_row("Domain", f"{p.domain} ({p.domain_confidence:.0%})")
+        table.add_row("Built", p.built_at)
+        table.add_row("Total Entries", str(p.total_entries))
+        if p.top_topics:
+            topics_str = "\n".join(f"  {t.topic}: {t.weight:.0%}" for t in p.top_topics[:8])
+            table.add_row("Top Topics", topics_str)
+        if p.patterns:
+            patterns_str = "\n".join(f"  {pat}" for pat in p.patterns)
+            table.add_row("Patterns", patterns_str)
+        if p.task_types_detected:
+            table.add_row("Task Types", ", ".join(p.task_types_detected))
+        table.add_row("Style", f"Formality: {p.style.formality:.0%}, Language: {p.style.language}")
+        console.print(table)
+
+        console.print("\n[bold]System prompt preview:[/bold]")
+        console.print(f"[dim]{p.to_system_prompt()}[/dim]")
+
+    elif action == "build":
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True,
+        ) as progress:
+            progress.add_task("Building profile from datalake...", total=None)
+            builder = ProfileBuilder(datalake_path=settings.datalake_path)
+            p = builder.build(output_path=profile_path)
+
+        console.print(Panel.fit("[bold green]Profile Built[/bold green]"))
+        console.print(f"  Domain: {p.domain} ({p.domain_confidence:.0%})")
+        console.print(f"  Topics: {len(p.top_topics)}")
+        console.print(f"  Entries: {p.total_entries}")
+        console.print(f"\n[dim]Saved to: {profile_path}[/dim]")
+
+    else:
+        console.print("[yellow]Available actions: show, build[/yellow]")
 
 
 @app.callback()

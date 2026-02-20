@@ -1016,3 +1016,42 @@ class TestFulltext:
         """fulltext with unknown action fails."""
         result = runner.invoke(app, ["fulltext", "unknown"])
         assert result.exit_code != 0
+
+
+class TestProfile:
+    def test_profile_show_no_profile(self, tmp_path):
+        """profile show with no profile built shows guidance."""
+        from unittest.mock import patch, MagicMock
+
+        mock_settings = MagicMock()
+        mock_settings.data_dir = tmp_path
+
+        with patch("src.config.settings", mock_settings):
+            result = runner.invoke(app, ["profile", "show"])
+
+        assert result.exit_code == 0
+        assert "No profile" in result.output or "no profile" in result.output.lower()
+
+    def test_profile_build(self, tmp_path):
+        """profile build creates profile from datalake."""
+        import json
+        from unittest.mock import patch, MagicMock
+
+        # Create sample datalake
+        tp_dir = tmp_path / "02-processed" / "training-pairs"
+        tp_dir.mkdir(parents=True)
+        pairs = [
+            {"instruction": "test q", "output": "test a", "category": "testing", "tags": ["testing"]},
+            {"instruction": "debug q", "output": "debug a", "category": "debugging", "tags": ["debugging"]},
+        ]
+        (tp_dir / "test.jsonl").write_text("\n".join(json.dumps(p) for p in pairs))
+
+        mock_settings = MagicMock()
+        mock_settings.datalake_path = tmp_path
+        mock_settings.data_dir = tmp_path / "data"
+
+        with patch("src.config.settings", mock_settings):
+            result = runner.invoke(app, ["profile", "build"])
+
+        assert result.exit_code == 0
+        assert "Profile Built" in result.output or "profile" in result.output.lower()
