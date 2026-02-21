@@ -5,14 +5,14 @@ All notable changes to Fabrik-Codek are documented in this file.
 ## [Unreleased]
 
 ### Added
-- **Graph Temporal Decay** — Exponential weight decay for knowledge graph edges (FC-39)
+- **Graph Temporal Decay** — Exponential weight decay for knowledge graph edges
   - Edges store `base_weight` and `last_reinforced` timestamps; entities store `last_seen`
   - `apply_decay()`: idempotent formula `weight = base_weight * 0.5^(days/half_life)`
   - Integrated into pipeline build (runs after graph completion, before save)
   - CLI: `fabrik graph decay --dry-run --half-life 90`
   - Config: `FABRIK_GRAPH_DECAY_HALF_LIFE_DAYS` (default: 90)
   - 11 new tests (4 timestamps + 7 decay including idempotency and prune integration)
-- **Competence Model** — Knowledge depth scoring per topic (FC-36)
+- **Competence Model** — Knowledge depth scoring per topic
   - `CompetenceBuilder` analyzes 3 signals: entry count (log scale), entity density (graph), recency (exponential decay)
   - 4 adaptive weight sets with graceful degradation when signals are missing
   - Competence levels: Expert (>=0.8), Competent (>=0.4), Novice (>=0.1), Unknown (<0.1)
@@ -29,7 +29,7 @@ All notable changes to Fabrik-Codek are documented in this file.
   - 4 new config settings: `FABRIK_MEILISEARCH_URL`, `FABRIK_MEILISEARCH_KEY`, `FABRIK_MEILISEARCH_INDEX`, `FABRIK_FULLTEXT_WEIGHT`
   - Graceful degradation — works without Meilisearch (`fulltext_weight=0.0` by default)
   - 55 new tests (29 fulltext engine + 8 hybrid RRF + 8 MCP + 4 API + 6 CLI)
-- **Adaptive Task Router** — Intelligent query classification and routing (FC-37)
+- **Adaptive Task Router** — Intelligent query classification and routing
   - Hybrid classification: keyword matching (7 task types) + LLM fallback
   - Topic detection from CompetenceMap with automatic model escalation
   - Per-task retrieval strategies (graph depth, vector/graph weights)

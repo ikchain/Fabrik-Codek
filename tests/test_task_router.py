@@ -1,4 +1,4 @@
-"""Tests for the Adaptive Task Router (FC-37)."""
+"""Tests for the Adaptive Task Router."""
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch

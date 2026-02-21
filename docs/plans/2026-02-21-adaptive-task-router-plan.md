@@ -1,4 +1,4 @@
-# FC-37: Adaptive Task Router — Implementation Plan
+# Adaptive Task Router — Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
@@ -21,7 +21,7 @@
 In `tests/test_task_router.py`:
 
 ```python
-"""Tests for the Adaptive Task Router (FC-37)."""
+"""Tests for the Adaptive Task Router."""
 
 from src.core.task_router import RetrievalStrategy, RoutingDecision
 
@@ -63,7 +63,7 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'src.core.task_router'
 Create `src/core/task_router.py`:
 
 ```python
-"""Adaptive Task Router for Fabrik-Codek (FC-37).
+"""Adaptive Task Router for Fabrik-Codek.
 
 Classifies user queries and produces routing decisions that adapt
 retrieval strategy, model selection, and system prompt based on
@@ -113,7 +113,7 @@ Expected: 2 PASS
 
 ```bash
 git add src/core/task_router.py tests/test_task_router.py
-git commit -m "FEAT: Add TaskRouter data model (FC-37)"
+git commit -m "FEAT: Add TaskRouter data model"
 ```
 
 ---
@@ -1138,7 +1138,7 @@ Replace the profile/competence injection block in `chat()`:
                 messages.insert(0, {"role": "system", "content": initial_decision.system_prompt})
 ```
 
-Note: In chat, the system prompt is set once at start. For a more advanced integration (re-routing per message), that would be FC-38 territory.
+Note: In chat, the system prompt is set once at start. For a more advanced integration (re-routing per message), that would be Outcome Trackingterritory.
 
 **Step 4: Add `from src.config import settings` import in `ask()` inner function**
 
@@ -1418,8 +1418,7 @@ Expected: ALL PASS (~700+ tests: 648 existing + ~60 new)
 Add under `## [Unreleased]` → `### Added`:
 
 ```markdown
-- **Adaptive Task Router** — Intelligent query classification and routing (FC-37)
-  - Hybrid classification: keyword matching + LLM fallback
+- **Adaptive Task Router** — Intelligent query classification and routing  - Hybrid classification: keyword matching + LLM fallback
   - Topic detection from CompetenceMap with auto-escalation
   - Per-task retrieval strategies (graph depth, vector/graph weights)
   - 3-layer system prompt: profile + competence + task-specific instructions
@@ -1435,7 +1434,7 @@ Update `### Changed` test count.
 
 ```bash
 git add -A
-git commit -m "DOCS: Update CHANGELOG with FC-37"
+git commit -m "DOCS: Update CHANGELOG with Adaptive Task Router"
 ```
 
 **Step 4: Run one more full suite to be safe**

@@ -1,4 +1,4 @@
-"""Adaptive Task Router for Fabrik-Codek (FC-37).
+"""Adaptive Task Router for Fabrik-Codek.
 
 Classifies user queries and produces routing decisions that adapt
 retrieval strategy, model selection, and system prompt based on

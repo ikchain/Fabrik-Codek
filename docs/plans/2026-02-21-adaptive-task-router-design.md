@@ -1,4 +1,4 @@
-# FC-37: Adaptive Task Router — Design
+# Adaptive Task Router — Design
 
 ## Problem
 
@@ -156,6 +156,5 @@ Strategy:    graph_depth=2, vector=0.5, graph=0.5
 | System prompt construction | ~8 | 3 layers, task-specific instructions |
 | Integration (route()) | ~8 | End-to-end: query → full decision |
 
-## Future (FC-38)
-
-Outcome Tracking will close the loop: track whether routing decisions led to good outcomes, and feed back to adjust strategies and escalation thresholds. The static strategies in this design are the starting point that FC-38 will make adaptive.
+## Future
+Outcome Tracking will close the loop: track whether routing decisions led to good outcomes, and feed back to adjust strategies and escalation thresholds. The static strategies in this design are the starting point that Outcome Tracking will make adaptive.
