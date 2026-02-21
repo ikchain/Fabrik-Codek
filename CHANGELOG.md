@@ -29,12 +29,21 @@ All notable changes to Fabrik-Codek are documented in this file.
   - 4 new config settings: `FABRIK_MEILISEARCH_URL`, `FABRIK_MEILISEARCH_KEY`, `FABRIK_MEILISEARCH_INDEX`, `FABRIK_FULLTEXT_WEIGHT`
   - Graceful degradation — works without Meilisearch (`fulltext_weight=0.0` by default)
   - 55 new tests (29 fulltext engine + 8 hybrid RRF + 8 MCP + 4 API + 6 CLI)
+- **Adaptive Task Router** — Intelligent query classification and routing (FC-37)
+  - Hybrid classification: keyword matching (7 task types) + LLM fallback
+  - Topic detection from CompetenceMap with automatic model escalation
+  - Per-task retrieval strategies (graph depth, vector/graph weights)
+  - 3-layer system prompt: personal profile + competence + task-specific instructions
+  - Model escalation: Novice/Unknown topics automatically use fallback model
+  - CLI: `fabrik router test -q "query"` for classification debugging
+  - Integrated into CLI (`ask`, `chat`), API (`/ask`), and MCP (`fabrik_ask`)
+  - 63 new tests (data model + classification + topic + strategy + escalation + prompt + LLM + integration)
 
 ### Changed
 - All CLI messages, prompts, and logger errors translated from Spanish to English
 - `HybridRAGEngine._rrf_fusion()` extended to accept optional fulltext results
 - Multi-source origin tracking: results found in multiple sources tagged as `"hybrid"`
-- Test count: 527 → 648
+- Test count: 527 → 711
 
 ## [1.2.1] - 2026-02-19
 
