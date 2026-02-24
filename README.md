@@ -4,7 +4,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests: 637](https://img.shields.io/badge/tests-637%20passing-brightgreen.svg)]()
+[![Tests: 782](https://img.shields.io/badge/tests-782%20passing-brightgreen.svg)]()
 
 Fabrik-Codek is a local AI development assistant that works with **any model via Ollama** (Qwen, Llama, DeepSeek, Codestral, Phi, Mistral...) and combines three-tier hybrid retrieval (vector + knowledge graph + full-text search) to provide context-aware coding assistance. It features a CLI, a REST API, and a continuous data flywheel that improves over time. No vendor lock-in — switch models with a flag.
 
@@ -15,12 +15,15 @@ graph TB
     subgraph Interfaces
         CLI[CLI - Typer + Rich]
         API[REST API - FastAPI]
+        MCP[MCP Server - FastMCP]
     end
 
     subgraph Core
         LLM[LLM Client - Ollama]
         Profile[Personal Profile]
         Competence[Competence Model]
+        Router[Adaptive Task Router]
+        Strategy[Strategy Optimizer]
     end
 
     subgraph Knowledge
@@ -34,18 +37,17 @@ graph TB
     subgraph Flywheel
         Collector[Data Collector]
         Observer[Session Observer]
-        Logger[Quality Logger]
+        Tracker[Outcome Tracker]
     end
 
-    CLI --> Profile
-    CLI --> Competence
-    CLI --> LLM
-    CLI --> Hybrid
-    API --> Profile
-    API --> LLM
-    API --> Hybrid
-    Profile --> LLM
-    Competence --> LLM
+    CLI --> Router
+    API --> Router
+    MCP --> Router
+    Router --> Profile
+    Router --> Competence
+    Router --> Strategy
+    Router --> LLM
+    Router --> Hybrid
 
     Hybrid --> RAG
     Hybrid --> Graph
@@ -55,8 +57,9 @@ graph TB
     Extract -->|heuristic| RAG
     Extract -->|transcript| Graph
 
-    Collector --> Logger
-    Observer --> Collector
+    Collector --> Observer
+    Tracker -->|feedback| Competence
+    Tracker -->|feedback| Strategy
 ```
 
 ## Features
@@ -73,17 +76,23 @@ graph TB
 - **Graph Completion**: Infers transitive relationships to densify the knowledge graph
 - **Quality-Gated Logger**: Rejects low-quality data to prevent model degradation
 - **Personal Profile**: Domain-agnostic user profiling that analyzes your datalake and generates behavioral instructions for the LLM — the model learns your stack, architecture, and tooling preferences automatically
-- **Competence Model**: Measures depth of knowledge per topic (Expert/Competent/Novice/Unknown) using entry count, graph density, and recency signals — enables adaptive responses based on your actual expertise level
+- **Competence Model**: Measures depth of knowledge per topic (Expert/Competent/Novice/Unknown) using 4 signals: entry count, graph density, recency, and outcome rate — with graceful degradation when signals are missing
+- **Adaptive Task Router**: Hybrid classification (keyword matching + LLM fallback) that detects task type and topic, selects the right model, adapts retrieval strategy, and builds a 3-layer system prompt — all before the LLM sees the query
+- **Outcome Tracking**: Zero-friction feedback loop that infers response quality from conversational patterns (topic changes, reformulations, negation keywords) — no manual feedback needed
+- **Strategy Optimizer**: Automatically adjusts retrieval parameters (graph depth, vector/graph weights) for underperforming task/topic combinations based on accumulated outcome data
+- **Graph Temporal Decay**: Exponential decay on knowledge graph edges keeps context fresh — older knowledge fades unless reinforced
+- **MCP Server**: FastMCP server with 6 tools + 3 resources, supports stdio and SSE transports — works with Claude Code, OpenClaw, Cursor, and any MCP-compatible agent
 
 ## Cognitive Architecture
 
-Fabrik-Codek implements a **cognitive architecture** — a structured system where memory, reasoning, learning, and action work together, much like how a human developer accumulates expertise over time.
+Fabrik-Codek implements a **cognitive architecture** — a structured system where memory, reasoning, learning, and action work together, much like how a human developer accumulates expertise over time. The **Hyper-Personalization Engine** closes the cognitive loop: the system adapts how it responds, observes whether its responses worked, and refines its strategy.
 
 ```mermaid
 graph LR
     subgraph Perception
         RAG[Vector Search]
         GS[Graph Traversal]
+        FTS[Full-Text Search]
     end
 
     subgraph Memory
@@ -107,14 +116,29 @@ graph LR
     subgraph Action
         CLI[CLI]
         API[REST API]
+        MCP[MCP Server]
     end
 
-    CLI --> WM
-    API --> WM
+    subgraph Self-Awareness
+        PP[Personal Profile]
+        CM[Competence Model]
+        TR[Task Router]
+        OT[Outcome Tracker]
+        SO[Strategy Optimizer]
+    end
+
+    CLI --> TR
+    API --> TR
+    MCP --> TR
+    TR --> WM
+    TR --> PP
+    TR --> CM
     WM --> RAG
     WM --> GS
+    WM --> FTS
     RAG --> LTM
     GS --> LTM
+    FTS --> LTM
     EM --> EX
     EX --> TB
     EX --> HE
@@ -123,6 +147,9 @@ graph LR
     LE --> LTM
     FW --> QG
     QG --> EM
+    OT -->|feedback| CM
+    OT -->|feedback| SO
+    SO -->|overrides| TR
 ```
 
 | Component | Role | Implementation |
@@ -130,13 +157,38 @@ graph LR
 | **Long-term memory** | Accumulated knowledge that persists across sessions | Knowledge Graph (NetworkX) + Vector DB (LanceDB) |
 | **Episodic memory** | Records of past interactions and reasoning | Session transcripts + auto-captures |
 | **Working memory** | Current conversation context | Prompt + RAG retrieved context |
-| **Perception** | Finding relevant knowledge for a query | Hybrid RAG (vector similarity + graph traversal + full-text search) |
-| **Learning** | Improving from every interaction | Data Flywheel with quality gate (rejects low-quality data) |
-| **Reasoning** | Extracting insights from experience | Thinking block extraction + heuristic/LLM entity extraction |
-| **Action** | Interacting with the developer | CLI (Typer + Rich) + REST API (FastAPI) |
-| **Self-awareness** | Knowing what it knows and what it doesn't | Competence Model (Expert/Competent/Novice/Unknown per topic) |
+| **Perception** | Finding relevant knowledge for a query | Hybrid RAG (vector + graph + full-text via RRF) |
+| **Learning** | Improving from every interaction | Data Flywheel with quality gate |
+| **Reasoning** | Extracting insights from experience | Thinking block + heuristic/LLM entity extraction |
+| **Action** | Interacting with the developer | CLI + REST API + MCP Server |
+| **Self-awareness** | Knowing what it knows and adapting | Personal Profile + Competence Model + Task Router + Outcome Tracker + Strategy Optimizer |
 
-Unlike frameworks that only describe cognitive architectures in papers, Fabrik-Codek is a **working implementation** — it captures how you work, builds a knowledge graph from your accumulated experience, measures your expertise depth per topic, and feeds that context back into every query.
+### Hyper-Personalization Engine
+
+The closed-loop adaptive pipeline that makes Fabrik-Codek personal:
+
+```
+Query → Task Router → [classify task + detect topic + check competence]
+                    → [select model + adapt retrieval strategy + build 3-layer prompt]
+                    → LLM Response
+                    → Outcome Tracker → [infer accepted/rejected/neutral from next turn]
+                                      → Competence Model → [outcome_rate as 4th signal]
+                                      → Strategy Optimizer → [adjust retrieval for weak spots]
+                                      → Task Router → [uses updated overrides next time]
+```
+
+| Component | What it does |
+|-----------|-------------|
+| **Personal Profile** | Learns your domain, stack, and preferences from the datalake |
+| **Competence Model** | Scores knowledge depth per topic (4 signals, graceful degradation) |
+| **Task Router** | Classifies queries, selects model, adapts retrieval strategy |
+| **Outcome Tracker** | Infers response quality from conversational patterns (zero friction) |
+| **Strategy Optimizer** | Generates retrieval overrides for underperforming combinations |
+| **Graph Temporal Decay** | Fades stale knowledge, reinforces recent activity |
+
+Unlike frameworks that only describe cognitive architectures in papers, Fabrik-Codek is a **working implementation** with a closed feedback loop — it captures how you work, builds a knowledge graph from your experience, measures your expertise, observes whether its responses help, and refines its strategy over time.
+
+> A 7B model that knows you is worth more than a 400B that doesn't.
 
 ## Personal Profile
 
@@ -176,22 +228,27 @@ fabrik competence show    # View current competence scores
 
 **How it works:**
 
-Three signals are combined per topic with adaptive weighting:
+Four signals are combined per topic with adaptive weighting:
 
 | Signal | Weight | Source | Formula |
 |--------|--------|--------|---------|
-| **Entry count** | 0.5 | Training pair categories | `log(entries+1) / log(100+1)` |
-| **Entity density** | 0.3 | Knowledge graph edges | `edge_count / 100` |
-| **Recency** | 0.2 | Auto-capture timestamps | `0.5^(days/30)` — exponential decay |
+| **Entry count** | 0.4 | Training pair categories | `log(entries+1) / log(100+1)` |
+| **Entity density** | 0.25 | Knowledge graph edges | `edge_count / 100` |
+| **Recency** | 0.15 | Auto-capture timestamps | `0.5^(days/30)` — exponential decay |
+| **Outcome rate** | 0.2 | Outcome tracker acceptance rate | `accepted / (accepted + rejected)` |
 
-When signals are missing (no graph, no recent activity), the weights redistribute gracefully:
+When signals are missing, weights redistribute gracefully across **8 weight sets** (4 with outcome data + 4 without):
 
-| Available signals | Entry | Density | Recency |
-|---|---|---|---|
-| All three | 0.5 | 0.3 | 0.2 |
-| No graph | 0.7 | — | 0.3 |
-| No recency | 0.6 | 0.4 | — |
-| Entry only | 0.8 | — | — |
+| Available signals | Entry | Density | Recency | Outcome |
+|---|---|---|---|---|
+| All four | 0.4 | 0.25 | 0.15 | 0.2 |
+| No graph | 0.5 | — | 0.2 | 0.3 |
+| No recency | 0.45 | 0.3 | — | 0.25 |
+| Entry + outcome only | 0.6 | — | — | 0.4 |
+| Entry + density + recency (no outcome) | 0.5 | 0.3 | 0.2 | — |
+| Entry + recency (no outcome) | 0.7 | — | 0.3 | — |
+| Entry + density (no outcome) | 0.6 | 0.4 | — | — |
+| Entry only (no outcome) | 1.0 | — | — | — |
 
 **Classification thresholds:**
 
@@ -210,7 +267,7 @@ Use Python for code examples. Prefer FastAPI with async/await.
 Expert in: postgresql, docker. Competent in: angular, terraform.
 ```
 
-This enables adaptive behavior: expert topics get confident responses, novice topics get honest disclosure, and unknown topics suggest escalation.
+This enables adaptive behavior: expert topics get confident responses, novice topics get honest disclosure, and unknown topics suggest escalation. When outcome data is available, the fourth signal (acceptance rate) continuously refines the scores based on how useful the responses actually were.
 
 ## Quick Start
 
@@ -262,6 +319,13 @@ fabrik status                  # Check system health
 | `fabrik fulltext search -q "..."` | Full-text keyword search |
 | `fabrik competence build` | Build competence map from datalake + graph |
 | `fabrik competence show` | View competence scores per topic |
+| `fabrik outcomes show` | View recent outcome records |
+| `fabrik outcomes stats` | Outcome acceptance rates per topic/task type |
+| `fabrik router test -q "..."` | Debug task classification without executing |
+| `fabrik graph decay` | Apply temporal decay to knowledge graph edges |
+| `fabrik graph prune` | Remove ghost nodes and weak edges |
+| `fabrik profile build` | Build personal profile from datalake |
+| `fabrik profile show` | View current personal profile |
 | `fabrik learn process` | Extract training data from Claude Code sessions |
 
 ## API Reference
@@ -529,13 +593,14 @@ logger.log_error(
 fabrik-codek/
 ├── src/
 │   ├── config/             # Settings (Pydantic BaseSettings)
-│   ├── core/               # LLM client, Personal Profile, Competence Model
-│   ├── interfaces/         # CLI (Typer) + API (FastAPI)
+│   ├── core/               # LLM client, Personal Profile, Competence Model,
+│   │   │                   #   Task Router, Strategy Optimizer
+│   ├── interfaces/         # CLI (Typer) + API (FastAPI) + MCP Server (FastMCP)
 │   ├── knowledge/          # RAG, Knowledge Graph, Extraction Pipeline
 │   │   └── extraction/     # Heuristic, LLM, Transcript extractors
-│   ├── flywheel/           # Data collection + session observer
+│   ├── flywheel/           # Data collection, Session observer, Outcome Tracker
 │   └── tools/              # Code tools
-├── tests/                  # 637 tests
+├── tests/                  # 782 tests
 ├── scripts/                # Setup, benchmarks, enrichment
 ├── data/                   # Local data storage
 ├── prompts/                # Prompt templates
@@ -578,7 +643,7 @@ You can also use the REST API directly (`/search`, `/graph/search`, `/ask`) for 
 
 ### OpenClaw Integration
 
-Fabrik-Codek is available as an [OpenClaw skill on ClawHub](https://clawhub.com). Install it with:
+Fabrik-Codek is available as an [OpenClaw skill on ClawHub](https://clawhub.ai/skills/fabrik-codek). Install it with:
 
 ```
 /install fabrik-codek
@@ -597,7 +662,7 @@ Or configure manually in your `openclaw.json`:
 }
 ```
 
-The skill exposes all 5 MCP tools to your OpenClaw agent. See [`skills/fabrik-codek/SKILL.md`](skills/fabrik-codek/SKILL.md) for details.
+The skill exposes all 6 MCP tools to your OpenClaw agent. See [`skills/fabrik-codek/SKILL.md`](skills/fabrik-codek/SKILL.md) for details.
 
 ## Contributing
 
