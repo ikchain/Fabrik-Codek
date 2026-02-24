@@ -1,7 +1,7 @@
 ---
 name: fabrik-codek
 description: "Cognitive architecture for developers: hyper-personalization engine (personal profiling, competence model, adaptive task routing, outcome tracking) over three-tier hybrid retrieval (vector + knowledge graph + full-text). A 7B model that knows you is worth more than a 400B that doesn't. 100% local, zero cloud dependencies."
-version: 1.5.0
+version: 1.6.0
 homepage: https://github.com/ikchain/Fabrik-Codek
 user-invocable: true
 metadata:
