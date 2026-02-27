@@ -65,6 +65,10 @@ class HybridRAGEngine:
         limit: int = 5,
         graph_depth: int = DEFAULT_GRAPH_DEPTH,
         min_weight: float = DEFAULT_MIN_WEIGHT,
+        confidence_threshold: float | None = None,
+        min_k: int | None = None,
+        max_k: int | None = None,
+        query_entities: list[str] | None = None,
     ) -> list[dict]:
         """Hybrid retrieval using RRF fusion of vector, graph, and fulltext results.
 
@@ -73,6 +77,10 @@ class HybridRAGEngine:
             limit: Maximum number of results.
             graph_depth: BFS depth for graph traversal.
             min_weight: Minimum edge weight for graph traversal.
+            confidence_threshold: If set, use adaptive retrieval for vector search.
+            min_k: Minimum results for adaptive retrieval.
+            max_k: Maximum results for adaptive retrieval.
+            query_entities: Entity names for confidence entity coverage.
 
         Returns:
             List of dicts with keys: text, source, category, score, origin.
@@ -80,7 +88,17 @@ class HybridRAGEngine:
         logger.debug("hybrid_retrieve_start", query=query[:100], limit=limit)
 
         # 1. Vector search
-        vector_results = await self._rag.retrieve(query, limit=limit * 2)
+        if confidence_threshold is not None:
+            adaptive_result = await self._rag.retrieve_adaptive(
+                query,
+                min_k=min_k or 1,
+                max_k=max_k or limit * 2,
+                confidence_threshold=confidence_threshold,
+                query_entities=query_entities,
+            )
+            vector_results = adaptive_result["results"]
+        else:
+            vector_results = await self._rag.retrieve(query, limit=limit * 2)
 
         # 2. Graph-enhanced retrieval
         graph_results = await self._graph_retrieve(
@@ -119,6 +137,41 @@ class HybridRAGEngine:
         )
         return fused
 
+    def _build_expansion_queries(
+        self,
+        seed_ids: list[str],
+        depth: int = 2,
+        min_weight: float = 0.3,
+    ) -> list[tuple[str, float]]:
+        """Build composite expansion queries from seed + neighbor entity pairs.
+
+        For each seed entity, gets its graph neighbors and builds
+        "{seed_name} {neighbor_name}" pairs. Deduplicates symmetric pairs
+        (A,B) == (B,A) and sorts by graph proximity score (highest first).
+
+        Returns:
+            List of (expansion_query, score) tuples.
+        """
+        seen_pairs: set[frozenset] = set()
+        expansion_queries: list[tuple[str, float]] = []
+
+        for seed_id in seed_ids:
+            seed_entity = self._graph.get_entity(seed_id)
+            if not seed_entity:
+                continue
+
+            neighbors = self._graph.get_neighbors(seed_id, depth=depth, min_weight=min_weight)
+            for neighbor_entity, score in neighbors:
+                pair_key = frozenset({seed_entity.name, neighbor_entity.name})
+                if pair_key not in seen_pairs:
+                    seen_pairs.add(pair_key)
+                    query = f"{seed_entity.name} {neighbor_entity.name}"
+                    expansion_queries.append((query, score))
+
+        # Sort by proximity score (highest first)
+        expansion_queries.sort(key=lambda x: x[1], reverse=True)
+        return expansion_queries
+
     async def _graph_retrieve(
         self,
         query: str,
@@ -126,40 +179,40 @@ class HybridRAGEngine:
         depth: int = 2,
         min_weight: float = 0.3,
     ) -> list[dict]:
-        """Retrieve documents via graph traversal from recognized entities."""
+        """Retrieve documents via graph-guided expansion queries.
+
+        Instead of searching by entity name alone, builds composite queries
+        from graph neighborhoods (e.g., "FastAPI Pydantic") to capture
+        relationship context in vector search.
+        """
         entity_ids = self._recognize_entities(query)
         if not entity_ids:
             return []
 
-        # Collect source doc IDs from graph neighborhood
-        all_doc_ids: set[str] = set()
-        for eid in entity_ids:
-            doc_ids = self._graph.get_source_docs_from_neighbors(
-                eid,
-                depth=depth,
-                min_weight=min_weight,
-            )
-            all_doc_ids.update(doc_ids)
-
-        if not all_doc_ids:
-            return []
-
-        # Fetch actual documents from vector DB using source doc IDs
-        # We use vector search as fallback - the doc IDs from graph are training pair IDs
-        # which may not directly map to vector DB. Use the entity names as search queries.
         results = []
         seen_texts: set[str] = set()
 
+        # 1. Graph-guided expansion queries
+        expansion_queries = self._build_expansion_queries(
+            entity_ids, depth=depth, min_weight=min_weight
+        )
+        for exp_query, _score in expansion_queries:
+            exp_results = await self._rag.retrieve(exp_query, limit=3)
+            for r in exp_results:
+                text_key = r["text"][:100]
+                if text_key not in seen_texts:
+                    seen_texts.add(text_key)
+                    r["origin"] = "graph"
+                    r["graph_expansion"] = exp_query
+                    results.append(r)
+
+        # 2. Direct seed entity name search (fallback)
         for eid in entity_ids:
             entity = self._graph.get_entity(eid)
             if not entity:
                 continue
-
-            # Search vector DB using entity name
-            entity_results = await self._rag.retrieve(
-                entity.name, limit=limit // len(entity_ids) + 1
-            )
-            for r in entity_results:
+            seed_results = await self._rag.retrieve(entity.name, limit=3)
+            for r in seed_results:
                 text_key = r["text"][:100]
                 if text_key not in seen_texts:
                     seen_texts.add(text_key)

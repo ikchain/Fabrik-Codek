@@ -571,3 +571,287 @@ class TestHybridRetrieveWithFullText:
 
         results = await engine.retrieve("test query", limit=5)
         assert len(results) >= 1
+
+
+# --- Graph-Guided Expansion Tests ---
+
+
+class TestGraphGuidedExpansion:
+    """Tests for _build_expansion_queries() and the rewritten _graph_retrieve()."""
+
+    def test_build_expansion_queries_returns_pairs(self, graph_engine, mock_rag_engine):
+        """Seed with neighbors produces expansion query pairs."""
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag_engine,
+            graph_engine=graph_engine,
+        )
+        # FastAPI has neighbors: pydantic, starlette
+        entity_ids = hybrid._recognize_entities("How to use FastAPI?")
+        assert len(entity_ids) > 0
+
+        queries = hybrid._build_expansion_queries(entity_ids)
+        assert len(queries) > 0
+
+        # Each query is a (string, float) tuple
+        for q, score in queries:
+            assert isinstance(q, str)
+            assert isinstance(score, float)
+            assert " " in q  # composite query with space between names
+
+    def test_build_expansion_queries_deduplicates(self, graph_engine, mock_rag_engine):
+        """Same pair (A,B) and (B,A) only appears once via frozenset dedup."""
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag_engine,
+            graph_engine=graph_engine,
+        )
+        # FastAPI -> pydantic and pydantic -> fastapi should deduplicate
+        # Recognize both FastAPI and Pydantic as seeds
+        entity_ids = hybrid._recognize_entities("FastAPI with Pydantic")
+        assert len(entity_ids) >= 2
+
+        queries = hybrid._build_expansion_queries(entity_ids)
+        # Extract frozenset keys to verify no duplicates
+        pair_keys = set()
+        for q, _score in queries:
+            parts = q.split(" ", 1)
+            pair_key = frozenset(parts)
+            assert pair_key not in pair_keys, f"Duplicate pair found: {q}"
+            pair_keys.add(pair_key)
+
+    def test_build_expansion_queries_sorted_by_score(self, graph_engine, mock_rag_engine):
+        """Pairs are sorted by proximity score (highest first)."""
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag_engine,
+            graph_engine=graph_engine,
+        )
+        entity_ids = hybrid._recognize_entities("How to use FastAPI?")
+        queries = hybrid._build_expansion_queries(entity_ids, depth=2)
+
+        if len(queries) > 1:
+            scores = [score for _q, score in queries]
+            assert scores == sorted(scores, reverse=True)
+
+    def test_build_expansion_queries_no_entities(self, graph_engine, mock_rag_engine):
+        """Empty seed list returns empty list."""
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag_engine,
+            graph_engine=graph_engine,
+        )
+        queries = hybrid._build_expansion_queries([])
+        assert queries == []
+
+    @pytest.mark.asyncio
+    async def test_graph_retrieve_uses_expansion_queries(self, graph_engine, mock_rag_engine):
+        """Verify expansion queries are used for vector search."""
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag_engine,
+            graph_engine=graph_engine,
+        )
+        results = await hybrid._graph_retrieve("How to use FastAPI?", limit=10)
+        assert len(results) > 0
+
+        # The mock_rag_engine.retrieve should have been called with composite queries
+        # (e.g., "fastapi pydantic") not just "fastapi"
+        call_args = [call.args[0] for call in mock_rag_engine.retrieve.call_args_list]
+        composite_calls = [arg for arg in call_args if " " in arg and len(arg.split()) >= 2]
+        assert len(composite_calls) > 0, f"Expected composite queries, got: {call_args}"
+
+    @pytest.mark.asyncio
+    async def test_graph_retrieve_tags_results(self, graph_engine, mock_rag_engine):
+        """Results have origin='graph' and graph_expansion key."""
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag_engine,
+            graph_engine=graph_engine,
+        )
+        results = await hybrid._graph_retrieve("How to use FastAPI?", limit=10)
+        assert len(results) > 0
+
+        for r in results:
+            assert r["origin"] == "graph"
+
+        # At least some results should have graph_expansion (from expansion queries)
+        expansion_results = [r for r in results if "graph_expansion" in r]
+        assert len(expansion_results) > 0
+
+    @pytest.mark.asyncio
+    async def test_graph_retrieve_deduplicates(self, graph_engine):
+        """Same text from multiple expansion queries appears only once."""
+        # Create a mock that always returns the same result
+        rag = MagicMock()
+        rag.retrieve = AsyncMock(
+            return_value=[
+                {
+                    "text": "FastAPI is a modern web framework for building APIs",
+                    "source": "file1",
+                    "category": "api",
+                    "score": 0.9,
+                },
+            ]
+        )
+
+        hybrid = HybridRAGEngine(
+            rag_engine=rag,
+            graph_engine=graph_engine,
+        )
+        results = await hybrid._graph_retrieve("How to use FastAPI?", limit=10)
+
+        # Despite multiple expansion queries + seed search all returning the same text,
+        # it should only appear once
+        texts = [r["text"] for r in results]
+        assert len(texts) == len(set(t[:100] for t in texts))
+
+    @pytest.mark.asyncio
+    async def test_graph_retrieve_includes_seed_fallback(self, graph_engine):
+        """Direct seed entity name search also runs (not only expansion queries)."""
+        call_log = []
+
+        async def tracking_retrieve(query, limit=5):
+            call_log.append(query)
+            return [
+                {
+                    "text": f"result for {query}",
+                    "source": "file1",
+                    "category": "api",
+                    "score": 0.9,
+                },
+            ]
+
+        rag = MagicMock()
+        rag.retrieve = AsyncMock(side_effect=tracking_retrieve)
+
+        hybrid = HybridRAGEngine(
+            rag_engine=rag,
+            graph_engine=graph_engine,
+        )
+        results = await hybrid._graph_retrieve("How to use FastAPI?", limit=20)
+        assert len(results) > 0
+
+        # Should have both composite queries AND direct seed name queries
+        # Direct seed query would be just "fastapi" (single word, entity name)
+        seed_calls = [q for q in call_log if q == "fastapi"]
+        assert len(seed_calls) > 0, f"Expected seed fallback call 'fastapi', got: {call_log}"
+
+    @pytest.mark.asyncio
+    async def test_graph_retrieve_empty_graph_returns_empty(self, mock_rag_engine, tmp_dir):
+        """No entities recognized -> empty list."""
+        empty_graph = GraphEngine(data_dir=tmp_dir / "graphdb")
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag_engine,
+            graph_engine=empty_graph,
+        )
+        results = await hybrid._graph_retrieve("something unknown", limit=10)
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_graph_retrieve_integration(self, graph_engine):
+        """Full retrieve() pipeline with expansion queries works end-to-end."""
+        call_log = []
+
+        async def tracking_retrieve(query, limit=5):
+            call_log.append(query)
+            return [
+                {
+                    "text": f"result for {query}",
+                    "source": "file1",
+                    "category": "api",
+                    "score": 0.9,
+                },
+            ]
+
+        rag = MagicMock()
+        rag.retrieve = AsyncMock(side_effect=tracking_retrieve)
+
+        hybrid = HybridRAGEngine(
+            rag_engine=rag,
+            graph_engine=graph_engine,
+        )
+        # Full retrieve() pipeline (vector + graph + fusion)
+        results = await hybrid.retrieve("How to use FastAPI?", limit=5)
+        assert len(results) > 0
+
+        # Verify graph expansion queries were part of the calls
+        composite_calls = [q for q in call_log if " " in q and len(q.split()) >= 2]
+        assert (
+            len(composite_calls) > 0
+        ), f"Expected composite expansion queries in full pipeline, got: {call_log}"
+
+
+# --- Adaptive Retrieval Integration Tests (FC-46) ---
+
+
+class TestHybridAdaptiveRetrieval:
+    """Verify HybridRAGEngine passes adaptive params through to RAGEngine."""
+
+    @pytest.mark.asyncio
+    async def test_retrieve_with_adaptive_params(self, graph_engine):
+        """HybridRAGEngine passes confidence_threshold through to retrieve_adaptive."""
+        mock_rag = MagicMock()
+        mock_rag.retrieve = AsyncMock(return_value=[])
+        mock_rag.retrieve_adaptive = AsyncMock(
+            return_value={
+                "results": [
+                    {
+                        "text": "adaptive result",
+                        "source": "f1",
+                        "category": "training",
+                        "score": 0.85,
+                    },
+                ],
+                "chunks_retrieved": 1,
+                "confidence": 0.85,
+                "stop_reason": "threshold",
+            }
+        )
+
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag,
+            graph_engine=graph_engine,
+        )
+
+        results = await hybrid.retrieve(
+            "test query",
+            limit=5,
+            confidence_threshold=0.7,
+            min_k=2,
+            max_k=10,
+            query_entities=["fastapi"],
+        )
+
+        mock_rag.retrieve_adaptive.assert_called_once_with(
+            "test query",
+            min_k=2,
+            max_k=10,
+            confidence_threshold=0.7,
+            query_entities=["fastapi"],
+        )
+        # Regular retrieve should NOT have been called for vector search
+        # (it may still be called by _graph_retrieve)
+        assert len(results) >= 0
+
+    @pytest.mark.asyncio
+    async def test_retrieve_without_adaptive_params(self, graph_engine):
+        """Default behavior unchanged when confidence_threshold is None."""
+        mock_rag = MagicMock()
+        mock_rag.retrieve = AsyncMock(
+            return_value=[
+                {
+                    "text": "vector result",
+                    "source": "v",
+                    "category": "training",
+                    "score": 0.9,
+                },
+            ]
+        )
+        mock_rag.retrieve_adaptive = AsyncMock()
+
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag,
+            graph_engine=graph_engine,
+        )
+
+        results = await hybrid.retrieve("test query", limit=5)
+
+        mock_rag.retrieve_adaptive.assert_not_called()
+        # Regular retrieve should have been called
+        assert mock_rag.retrieve.call_count >= 1
+        assert len(results) >= 0

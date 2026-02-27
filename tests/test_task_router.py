@@ -1,14 +1,18 @@
-"""Tests for the Adaptive Task Router."""
+"""Tests for the Adaptive Task Router (FC-37, FC-47)."""
 
 import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from src.core.competence_model import CompetenceEntry, CompetenceMap
 from src.core.personal_profile import PersonalProfile, StyleProfile
 from src.core.task_router import (
     TASK_INSTRUCTIONS,
     TASK_STRATEGIES,
+    LearnedClassifier,
     RetrievalStrategy,
     RoutingDecision,
     TaskRouter,
@@ -18,6 +22,7 @@ from src.core.task_router import (
     detect_topic,
     get_model,
     get_strategy,
+    load_learned_classifier,
     parse_llm_classification,
 )
 
@@ -35,6 +40,9 @@ class TestDataModel:
         assert s.vector_weight == 0.6
         assert s.graph_weight == 0.4
         assert s.fulltext_weight == 0.0
+        assert s.confidence_threshold == 0.7
+        assert s.min_k == 1
+        assert s.max_k == 8
 
     def test_routing_decision_fields(self):
         s = RetrievalStrategy(graph_depth=3, vector_weight=0.4, graph_weight=0.6)
@@ -510,7 +518,7 @@ class TestCLIIntegrationSmoke:
 
 
 # ---------------------------------------------------------------------------
-# Task 8: Strategy overrides
+# Task 8: Strategy overrides (FC-38)
 # ---------------------------------------------------------------------------
 
 
@@ -662,3 +670,653 @@ class TestStrategyOverrides:
         assert decision.strategy.vector_weight == 0.5
         assert decision.strategy.graph_weight == 0.5
         assert decision.strategy.fulltext_weight == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Task 9: MAB integration (FC-42)
+# ---------------------------------------------------------------------------
+
+
+class TestMABIntegration:
+    """Tests for TaskRouter integration with MABStrategyOptimizer."""
+
+    @pytest.fixture
+    def mab_router(self, tmp_path):
+        """Router with a MABStrategyOptimizer attached."""
+        from src.core.strategy_optimizer import MABStrategyOptimizer
+
+        competence_map = CompetenceMap(topics=[], built_at="")
+        profile = PersonalProfile(domain="", patterns=[])
+        settings = SimpleNamespace(
+            default_model="test-model",
+            fallback_model="fallback-model",
+            data_dir=tmp_path,
+        )
+        mab = MABStrategyOptimizer(tmp_path)
+        return TaskRouter(competence_map, profile, settings, mab=mab)
+
+    @pytest.mark.asyncio
+    async def test_route_with_mab_returns_arm_id(self, mab_router):
+        """When MAB is provided, RoutingDecision.arm_id is set."""
+        decision = await mab_router.route("fix this error in postgresql")
+        assert decision.arm_id is not None
+        assert decision.arm_id in {"default", "graph_boost", "deep_graph", "vector_focus"}
+
+    @pytest.mark.asyncio
+    async def test_route_without_mab_arm_id_is_none(self, tmp_path):
+        """When no MAB is provided, arm_id is None (backward compat)."""
+        competence_map = CompetenceMap(topics=[], built_at="")
+        profile = PersonalProfile(domain="", patterns=[])
+        settings = SimpleNamespace(
+            default_model="test-model",
+            fallback_model="fallback-model",
+            data_dir=tmp_path,
+        )
+        router = TaskRouter(competence_map, profile, settings)
+        decision = await router.route("fix this error")
+        assert decision.arm_id is None
+
+
+# ---------------------------------------------------------------------------
+# Task 10: Confidence threshold fields (FC-46)
+# ---------------------------------------------------------------------------
+
+
+class TestConfidenceThresholdFields:
+    """Verify RetrievalStrategy has confidence fields and per-task thresholds."""
+
+    def test_strategy_has_confidence_fields(self):
+        """RetrievalStrategy has confidence_threshold, min_k, max_k."""
+        s = RetrievalStrategy()
+        assert hasattr(s, "confidence_threshold")
+        assert hasattr(s, "min_k")
+        assert hasattr(s, "max_k")
+        assert s.confidence_threshold == 0.7
+        assert s.min_k == 1
+        assert s.max_k == 8
+
+    def test_per_task_thresholds(self):
+        """Architecture has low threshold, explanation has high threshold."""
+        arch = get_strategy("architecture")
+        expl = get_strategy("explanation")
+        assert arch.confidence_threshold == 0.5
+        assert expl.confidence_threshold == 0.8
+        assert arch.confidence_threshold < expl.confidence_threshold
+
+    def test_debugging_strategy_confidence_fields(self):
+        """Debugging strategy has specific confidence settings."""
+        s = get_strategy("debugging")
+        assert s.confidence_threshold == 0.6
+        assert s.min_k == 2
+        assert s.max_k == 8
+
+    def test_code_review_strategy_confidence_fields(self):
+        """Code review strategy has specific confidence settings."""
+        s = get_strategy("code_review")
+        assert s.confidence_threshold == 0.7
+        assert s.min_k == 1
+        assert s.max_k == 5
+
+    def test_all_strategies_have_confidence_fields(self):
+        """All task strategies produce strategies with confidence fields."""
+        for task_type in TASK_STRATEGIES:
+            s = get_strategy(task_type)
+            assert isinstance(s.confidence_threshold, float)
+            assert isinstance(s.min_k, int)
+            assert isinstance(s.max_k, int)
+            assert 0.0 < s.confidence_threshold <= 1.0
+            assert s.min_k >= 1
+            assert s.max_k >= s.min_k
+
+
+# ---------------------------------------------------------------------------
+# Task 11: Learned classifier (FC-47)
+# ---------------------------------------------------------------------------
+
+
+def _make_outcome_entries(task_type: str, count: int, prefix: str = "") -> list[dict]:
+    """Generate synthetic outcome entries for testing."""
+    templates = {
+        "debugging": [
+            "fix the connection error in database",
+            "why does this crash on startup",
+            "traceback in the authentication module",
+            "bug in the payment processing logic",
+            "exception thrown when parsing JSON input",
+            "the server fails to respond after timeout",
+            "broken link in the navigation component",
+            "wrong output from the calculation function",
+            "error handling missing in file upload",
+            "crash when user submits empty form",
+        ],
+        "code_review": [
+            "review the new authentication service",
+            "refactor the database connection pool",
+            "clean up the legacy API handlers",
+            "improve the error handling patterns",
+            "quality check on the test suite",
+            "review pull request for user management",
+            "refactor the notification service code",
+            "improve readability of the config parser",
+            "clean up unused imports and variables",
+            "review the middleware implementation",
+        ],
+        "explanation": [
+            "explain how async context managers work",
+            "what is dependency injection pattern",
+            "how does the event loop handle coroutines",
+            "difference between composition and inheritance",
+            "explain the observer pattern in detail",
+            "what is the purpose of middleware layers",
+            "how does connection pooling improve performance",
+            "compare REST and GraphQL approaches",
+            "explain SOLID principles with examples",
+            "what is eventual consistency in databases",
+        ],
+        "testing": [
+            "write unit tests for the user service",
+            "add integration test for API endpoints",
+            "mock the external payment gateway",
+            "improve test coverage for edge cases",
+            "test the error handling in data pipeline",
+            "write pytest fixtures for database tests",
+            "add assertion for response schema validation",
+            "create test suite for authentication flow",
+            "test concurrent access to shared resources",
+            "add regression tests for the bugfix",
+        ],
+        "architecture": [
+            "design a microservice for notifications",
+            "structure the domain layer with DDD patterns",
+            "architect the event sourcing pipeline",
+            "design the hexagonal port and adapter pattern",
+            "structure the module boundaries correctly",
+            "design the caching strategy for the API",
+            "architect a scalable message queue system",
+            "design the database schema for multi-tenancy",
+            "structure the monorepo for shared libraries",
+            "design the API gateway routing rules",
+        ],
+        "devops": [
+            "deploy the application to kubernetes cluster",
+            "configure docker compose for local development",
+            "setup terraform modules for AWS infrastructure",
+            "configure nginx reverse proxy with SSL",
+            "create CI/CD pipeline for automated testing",
+            "deploy containerized services to production",
+            "setup monitoring and alerting with prometheus",
+            "configure load balancer for high availability",
+            "automate database backup and restore process",
+            "deploy helm charts to the staging environment",
+        ],
+        "ml_engineering": [
+            "fine-tune the embedding model for domain data",
+            "build RAG pipeline with vector similarity search",
+            "train the classification model on labeled dataset",
+            "optimize the LLM inference latency",
+            "build feature engineering pipeline for training",
+            "evaluate the model performance on test set",
+            "implement vector database indexing strategy",
+            "tune hyperparameters for the neural network",
+            "build data augmentation pipeline for training",
+            "deploy the model serving endpoint with batching",
+        ],
+    }
+
+    queries = templates.get(task_type, [f"query about {task_type} topic {i}" for i in range(10)])
+    entries = []
+    for i in range(count):
+        q = f"{prefix}{queries[i % len(queries)]} variant {i}"
+        entries.append(
+            {
+                "query": q,
+                "task_type": task_type,
+                "outcome": "accepted",
+                "timestamp": f"2026-02-27T00:{i:02d}:00",
+            }
+        )
+    return entries
+
+
+class TestLearnedClassifier:
+    """Tests for the TF-IDF learned classifier (FC-47)."""
+
+    def test_build_corpus_reads_accepted_outcomes(self, tmp_path):
+        """build_corpus extracts only accepted outcomes from JSONL files."""
+        outcomes_dir = tmp_path / "01-raw" / "outcomes"
+        outcomes_dir.mkdir(parents=True)
+        entries = [
+            {"query": "fix error", "task_type": "debugging", "outcome": "accepted"},
+            {"query": "hello world", "task_type": "general", "outcome": "neutral"},
+            {"query": "review code", "task_type": "code_review", "outcome": "accepted"},
+            {"query": "rejected query", "task_type": "testing", "outcome": "rejected"},
+        ]
+        with open(outcomes_dir / "test.jsonl", "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+
+        corpus_path = tmp_path / "corpus.json"
+        lc = LearnedClassifier(corpus_path)
+        size = lc.build_corpus(tmp_path)
+        assert size == 2  # Only accepted entries
+
+        corpus = lc.load_corpus()
+        assert len(corpus) == 2
+        assert corpus[0]["query"] == "fix error"
+        assert corpus[0]["task_type"] == "debugging"
+        assert corpus[1]["query"] == "review code"
+        assert corpus[1]["task_type"] == "code_review"
+
+    def test_build_corpus_no_outcomes_dir_returns_zero(self, tmp_path):
+        """build_corpus returns 0 when outcomes directory does not exist."""
+        corpus_path = tmp_path / "corpus.json"
+        lc = LearnedClassifier(corpus_path)
+        size = lc.build_corpus(tmp_path)
+        assert size == 0
+
+    def test_build_corpus_empty_dir_returns_zero(self, tmp_path):
+        """build_corpus returns 0 when outcomes directory is empty."""
+        outcomes_dir = tmp_path / "01-raw" / "outcomes"
+        outcomes_dir.mkdir(parents=True)
+        corpus_path = tmp_path / "corpus.json"
+        lc = LearnedClassifier(corpus_path)
+        size = lc.build_corpus(tmp_path)
+        assert size == 0
+
+    def test_build_corpus_skips_malformed_json_lines(self, tmp_path):
+        """build_corpus skips lines with invalid JSON."""
+        outcomes_dir = tmp_path / "01-raw" / "outcomes"
+        outcomes_dir.mkdir(parents=True)
+        with open(outcomes_dir / "test.jsonl", "w") as f:
+            f.write('{"query": "fix error", "task_type": "debugging", "outcome": "accepted"}\n')
+            f.write("{invalid json}\n")
+            f.write('{"query": "review code", "task_type": "code_review", "outcome": "accepted"}\n')
+
+        corpus_path = tmp_path / "corpus.json"
+        lc = LearnedClassifier(corpus_path)
+        size = lc.build_corpus(tmp_path)
+        assert size == 2
+
+    def test_build_corpus_skips_entries_without_query(self, tmp_path):
+        """build_corpus skips accepted entries missing query field."""
+        outcomes_dir = tmp_path / "01-raw" / "outcomes"
+        outcomes_dir.mkdir(parents=True)
+        with open(outcomes_dir / "test.jsonl", "w") as f:
+            f.write('{"task_type": "debugging", "outcome": "accepted"}\n')
+            f.write('{"query": "", "task_type": "debugging", "outcome": "accepted"}\n')
+            f.write('{"query": "valid", "task_type": "debugging", "outcome": "accepted"}\n')
+
+        corpus_path = tmp_path / "corpus.json"
+        lc = LearnedClassifier(corpus_path)
+        size = lc.build_corpus(tmp_path)
+        assert size == 1  # Only the one with non-empty query
+
+    def test_fit_returns_false_when_corpus_too_small(self, tmp_path):
+        """fit returns False when corpus has fewer than MIN_CORPUS_SIZE entries."""
+        corpus_path = tmp_path / "corpus.json"
+        lc = LearnedClassifier(corpus_path)
+        # Save a small corpus
+        lc.save_corpus([{"query": f"q{i}", "task_type": "debugging"} for i in range(10)])
+        assert lc.fit() is False
+        assert lc.is_fitted is False
+
+    def test_fit_returns_true_with_sufficient_corpus(self, tmp_path):
+        """fit returns True when corpus has >= MIN_CORPUS_SIZE entries."""
+        corpus_path = tmp_path / "corpus.json"
+        lc = LearnedClassifier(corpus_path)
+
+        # Generate 60 entries across multiple task types
+        entries = []
+        entries.extend(_make_outcome_entries("debugging", 20))
+        entries.extend(_make_outcome_entries("code_review", 20))
+        entries.extend(_make_outcome_entries("explanation", 20))
+        lc.save_corpus(entries)
+
+        assert lc.fit() is True
+        assert lc.is_fitted is True
+
+    def test_classify_returns_correct_task_type(self, tmp_path):
+        """classify returns the correct task_type for a matching query."""
+        corpus_path = tmp_path / "corpus.json"
+        lc = LearnedClassifier(corpus_path)
+
+        # Build corpus with distinct categories
+        entries = []
+        entries.extend(_make_outcome_entries("debugging", 25))
+        entries.extend(_make_outcome_entries("code_review", 25))
+        entries.extend(_make_outcome_entries("testing", 25))
+        lc.save_corpus(entries)
+        lc.fit()
+
+        # Query that strongly matches debugging vocabulary
+        task_type, confidence = lc.classify("fix the critical error in the database connection")
+        assert task_type == "debugging"
+        assert confidence > 0.0
+
+    def test_classify_returns_general_when_not_fitted(self, tmp_path):
+        """classify returns ('general', 0.0) when not fitted."""
+        corpus_path = tmp_path / "corpus.json"
+        lc = LearnedClassifier(corpus_path)
+        assert lc.is_fitted is False
+
+        task_type, confidence = lc.classify("fix error")
+        assert task_type == "general"
+        assert confidence == 0.0
+
+    def test_classify_confidence_above_zero_for_match(self, tmp_path):
+        """classify returns confidence > 0 for a query matching the corpus."""
+        corpus_path = tmp_path / "corpus.json"
+        lc = LearnedClassifier(corpus_path)
+
+        entries = []
+        entries.extend(_make_outcome_entries("debugging", 30))
+        entries.extend(_make_outcome_entries("testing", 30))
+        lc.save_corpus(entries)
+        lc.fit()
+
+        _, confidence = lc.classify("write unit tests for the service")
+        assert confidence > 0.0
+
+    def test_corpus_persistence_roundtrip(self, tmp_path):
+        """save_corpus + load_corpus preserves data correctly."""
+        corpus_path = tmp_path / "corpus.json"
+        lc = LearnedClassifier(corpus_path)
+
+        original = [
+            {"query": "fix the bug", "task_type": "debugging"},
+            {"query": "review the code", "task_type": "code_review"},
+            {"query": "explain async", "task_type": "explanation"},
+        ]
+        lc.save_corpus(original)
+        loaded = lc.load_corpus()
+        assert loaded == original
+
+    def test_load_corpus_returns_empty_when_no_file(self, tmp_path):
+        """load_corpus returns [] when corpus file does not exist."""
+        corpus_path = tmp_path / "nonexistent.json"
+        lc = LearnedClassifier(corpus_path)
+        assert lc.load_corpus() == []
+
+    def test_load_corpus_returns_empty_on_malformed_json(self, tmp_path):
+        """load_corpus returns [] when corpus file has invalid JSON."""
+        corpus_path = tmp_path / "corpus.json"
+        corpus_path.write_text("{invalid", encoding="utf-8")
+        lc = LearnedClassifier(corpus_path)
+        assert lc.load_corpus() == []
+
+    def test_load_corpus_returns_empty_on_non_list_json(self, tmp_path):
+        """load_corpus returns [] when corpus is valid JSON but not a list."""
+        corpus_path = tmp_path / "corpus.json"
+        corpus_path.write_text('{"key": "value"}', encoding="utf-8")
+        lc = LearnedClassifier(corpus_path)
+        assert lc.load_corpus() == []
+
+    @patch("src.core.task_router._SKLEARN_AVAILABLE", False)
+    def test_sklearn_unavailable_fit_returns_false(self, tmp_path):
+        """fit returns False when sklearn is not available."""
+        corpus_path = tmp_path / "corpus.json"
+        lc = LearnedClassifier(corpus_path)
+        entries = _make_outcome_entries("debugging", 60)
+        lc.save_corpus(entries)
+        assert lc.fit() is False
+
+    @patch("src.core.task_router._SKLEARN_AVAILABLE", False)
+    def test_sklearn_unavailable_classify_returns_general(self, tmp_path):
+        """classify returns ('general', 0.0) when sklearn is unavailable."""
+        corpus_path = tmp_path / "corpus.json"
+        lc = LearnedClassifier(corpus_path)
+        # Force _fitted to True to test the sklearn guard inside classify
+        lc._fitted = True
+        task_type, confidence = lc.classify("fix error")
+        assert task_type == "general"
+        assert confidence == 0.0
+
+    def test_build_corpus_multiple_jsonl_files(self, tmp_path):
+        """build_corpus reads from multiple JSONL files in outcomes directory."""
+        outcomes_dir = tmp_path / "01-raw" / "outcomes"
+        outcomes_dir.mkdir(parents=True)
+
+        for day in ["2026-02-25", "2026-02-26"]:
+            with open(outcomes_dir / f"{day}_outcomes.jsonl", "w") as f:
+                f.write(
+                    json.dumps(
+                        {"query": f"q from {day}", "task_type": "debugging", "outcome": "accepted"}
+                    )
+                    + "\n"
+                )
+
+        corpus_path = tmp_path / "corpus.json"
+        lc = LearnedClassifier(corpus_path)
+        size = lc.build_corpus(tmp_path)
+        assert size == 2
+
+    def test_classify_distinguishes_multiple_types(self, tmp_path):
+        """Classifier can distinguish between several task types."""
+        corpus_path = tmp_path / "corpus.json"
+        lc = LearnedClassifier(corpus_path)
+
+        entries = []
+        entries.extend(_make_outcome_entries("debugging", 20))
+        entries.extend(_make_outcome_entries("testing", 20))
+        entries.extend(_make_outcome_entries("architecture", 20))
+        lc.save_corpus(entries)
+        lc.fit()
+
+        # Testing query
+        task_type, _ = lc.classify("write pytest unit tests with mock fixtures")
+        assert task_type == "testing"
+
+        # Architecture query
+        task_type, _ = lc.classify("design the hexagonal architecture for this service")
+        assert task_type == "architecture"
+
+    def test_min_corpus_size_boundary(self, tmp_path):
+        """fit returns False at 49 entries, True at 50."""
+        corpus_path = tmp_path / "corpus.json"
+
+        # 49 entries -> False
+        lc = LearnedClassifier(corpus_path)
+        entries = _make_outcome_entries("debugging", 49)
+        lc.save_corpus(entries)
+        assert lc.fit() is False
+
+        # 50 entries -> True
+        entries = _make_outcome_entries("debugging", 50)
+        lc.save_corpus(entries)
+        assert lc.fit() is True
+
+
+# ---------------------------------------------------------------------------
+# Task 12: Learned classifier integration with TaskRouter (FC-47)
+# ---------------------------------------------------------------------------
+
+
+class TestLearnedClassifierIntegration:
+    """Integration tests: TaskRouter with LearnedClassifier."""
+
+    def _build_fitted_classifier(self, tmp_path) -> LearnedClassifier:
+        """Build and fit a LearnedClassifier with sufficient corpus."""
+        corpus_path = tmp_path / "corpus.json"
+        lc = LearnedClassifier(corpus_path)
+        entries = []
+        entries.extend(_make_outcome_entries("debugging", 25))
+        entries.extend(_make_outcome_entries("code_review", 25))
+        entries.extend(_make_outcome_entries("testing", 25))
+        lc.save_corpus(entries)
+        lc.fit()
+        return lc
+
+    def _make_router(self, tmp_path, learned=None) -> TaskRouter:
+        """Build a TaskRouter with optional LearnedClassifier."""
+        profile = PersonalProfile(
+            domain="software_development",
+            domain_confidence=0.95,
+            patterns=["Use Python with FastAPI"],
+        )
+        cmap = CompetenceMap(
+            topics=[
+                CompetenceEntry(topic="postgresql", score=0.85, level="Expert"),
+                CompetenceEntry(topic="docker", score=0.45, level="Competent"),
+            ]
+        )
+        mock_settings = MagicMock()
+        mock_settings.default_model = "qwen2.5-coder:14b"
+        mock_settings.fallback_model = "qwen2.5-coder:32b"
+        mock_settings.data_dir = str(tmp_path)
+        return TaskRouter(cmap, profile, mock_settings, learned_classifier=learned)
+
+    def test_router_uses_learned_method_when_confident(self, tmp_path):
+        """TaskRouter uses 'learned' classification_method when classifier is confident."""
+        learned = self._build_fitted_classifier(tmp_path)
+        router = self._make_router(tmp_path, learned=learned)
+
+        # Query with multiple corpus-matching terms to exceed CONFIDENCE_THRESHOLD
+        decision = asyncio.run(router.route("review refactor clean improve quality readable"))
+        assert decision.classification_method == "learned"
+        assert decision.task_type == "code_review"
+
+    def test_router_falls_back_to_keyword_when_no_classifier(self, tmp_path):
+        """TaskRouter without learned_classifier uses keyword method (backward compat)."""
+        router = self._make_router(tmp_path, learned=None)
+        decision = asyncio.run(router.route("fix the error in my code"))
+        assert decision.classification_method == "keyword"
+        assert decision.task_type == "debugging"
+
+    def test_router_falls_back_to_keyword_when_not_fitted(self, tmp_path):
+        """Unfitted LearnedClassifier causes fallback to keyword classification."""
+        corpus_path = tmp_path / "corpus.json"
+        lc = LearnedClassifier(corpus_path)
+        # Not fitted -> is_fitted is False
+        router = self._make_router(tmp_path, learned=lc)
+        decision = asyncio.run(router.route("fix the error in my code"))
+        assert decision.classification_method == "keyword"
+
+    def test_routing_decision_learned_method_in_dataclass(self, tmp_path):
+        """RoutingDecision correctly stores 'learned' in classification_method."""
+        learned = self._build_fitted_classifier(tmp_path)
+        router = self._make_router(tmp_path, learned=learned)
+        decision = asyncio.run(router.route("review refactor clean improve quality readable"))
+        assert isinstance(decision, RoutingDecision)
+        assert decision.classification_method == "learned"
+
+    def test_router_falls_back_when_learned_low_confidence(self, tmp_path):
+        """When learned classifier confidence is below threshold, falls back to keywords."""
+        corpus_path = tmp_path / "corpus.json"
+        lc = LearnedClassifier(corpus_path)
+
+        # Build corpus with very homogeneous data (all debugging)
+        entries = _make_outcome_entries("debugging", 60)
+        lc.save_corpus(entries)
+        lc.fit()
+
+        # Mock classify to return low confidence
+        def low_confidence_classify(query):
+            return ("debugging", 0.1)  # Below CONFIDENCE_THRESHOLD (0.3)
+
+        lc.classify = low_confidence_classify
+
+        router = self._make_router(tmp_path, learned=lc)
+        decision = asyncio.run(router.route("fix the error now"))
+        # Should fall back to keyword since learned confidence < 0.3
+        assert decision.classification_method == "keyword"
+
+    @patch("src.core.task_router.classify_by_llm", new_callable=AsyncMock)
+    def test_full_fallback_chain_learned_to_keyword_to_llm(self, mock_llm, tmp_path):
+        """Full chain: learned (unfitted) -> keywords (no match) -> LLM."""
+        mock_llm.return_value = "architecture"
+
+        corpus_path = tmp_path / "corpus.json"
+        lc = LearnedClassifier(corpus_path)
+        # Not fitted -> skip
+        router = self._make_router(tmp_path, learned=lc)
+
+        # Query with no keyword matches -> LLM fallback
+        decision = asyncio.run(router.route("make it better"))
+        assert decision.classification_method == "llm"
+        assert decision.task_type == "architecture"
+        mock_llm.assert_called_once()
+
+    def test_router_backward_compat_no_learned_no_mab(self, tmp_path):
+        """TaskRouter works exactly as before when no learned_classifier and no mab."""
+        router = self._make_router(tmp_path, learned=None)
+        decision = asyncio.run(router.route("fix the error in postgresql"))
+        assert decision.task_type == "debugging"
+        assert decision.topic == "postgresql"
+        assert decision.classification_method == "keyword"
+        assert decision.competence_level == "Expert"
+
+
+# ---------------------------------------------------------------------------
+# Task 13: load_learned_classifier helper + build_corpus guard (FC-47)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadLearnedClassifier:
+    """Tests for the load_learned_classifier helper function."""
+
+    def test_returns_fitted_classifier_when_corpus_exists(self, tmp_path):
+        """Returns a fitted LearnedClassifier when corpus file exists with enough data."""
+        corpus_path = tmp_path / "profile" / "router_corpus.json"
+        corpus_path.parent.mkdir(parents=True, exist_ok=True)
+        entries = _make_outcome_entries("debugging", 30)
+        entries.extend(_make_outcome_entries("code_review", 30))
+        with open(corpus_path, "w", encoding="utf-8") as f:
+            json.dump(entries, f)
+
+        settings = SimpleNamespace(data_dir=tmp_path)
+        result = load_learned_classifier(settings)
+        assert result is not None
+        assert result.is_fitted
+
+    def test_returns_none_when_no_corpus(self, tmp_path):
+        """Returns None when corpus file doesn't exist."""
+        settings = SimpleNamespace(data_dir=tmp_path)
+        result = load_learned_classifier(settings)
+        assert result is None
+
+    def test_returns_none_when_data_dir_none(self):
+        """Returns None when settings.data_dir is None."""
+        settings = SimpleNamespace(data_dir=None)
+        result = load_learned_classifier(settings)
+        assert result is None
+
+    def test_returns_none_when_corpus_too_small(self, tmp_path):
+        """Returns None when corpus exists but has fewer than 50 entries."""
+        corpus_path = tmp_path / "profile" / "router_corpus.json"
+        corpus_path.parent.mkdir(parents=True, exist_ok=True)
+        entries = _make_outcome_entries("debugging", 10)
+        with open(corpus_path, "w", encoding="utf-8") as f:
+            json.dump(entries, f)
+
+        settings = SimpleNamespace(data_dir=tmp_path)
+        result = load_learned_classifier(settings)
+        assert result is None
+
+
+class TestBuildCorpusGuard:
+    """Tests for build_corpus not overwriting valid corpus with empty list."""
+
+    def test_build_corpus_does_not_overwrite_with_empty(self, tmp_path):
+        """build_corpus with no accepted outcomes does not overwrite existing corpus."""
+        corpus_path = tmp_path / "corpus.json"
+        # Pre-populate corpus with valid data
+        existing = [{"query": "fix error", "task_type": "debugging"}]
+        with open(corpus_path, "w", encoding="utf-8") as f:
+            json.dump(existing, f)
+
+        # Create outcomes dir with only rejected outcomes
+        datalake = tmp_path / "datalake"
+        outcomes_dir = datalake / "01-raw" / "outcomes"
+        outcomes_dir.mkdir(parents=True)
+        with open(outcomes_dir / "2026-01-01_outcomes.jsonl", "w") as f:
+            f.write(json.dumps({"query": "q", "task_type": "debugging", "outcome": "rejected"}))
+
+        lc = LearnedClassifier(corpus_path)
+        result = lc.build_corpus(datalake)
+        assert result == 0
+
+        # Verify existing corpus was NOT overwritten
+        with open(corpus_path, encoding="utf-8") as f:
+            saved = json.load(f)
+        assert len(saved) == 1
+        assert saved[0]["query"] == "fix error"

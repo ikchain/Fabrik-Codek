@@ -39,6 +39,14 @@ from src.config import settings
 # Configurable via FABRIK_EMBEDDING_DIM env var (default: 768 for nomic-embed-text)
 EMBEDDING_DIM = settings.embedding_dim
 
+# Stop-RAG adaptive retrieval constants (FC-46)
+MIN_SIMILARITY_FLOOR: float = 0.2
+DEFAULT_CONFIDENCE_THRESHOLD: float = 0.7
+DEFAULT_MIN_K: int = 1
+DEFAULT_MAX_K: int = 8
+SIMILARITY_WEIGHT: float = 0.6
+COVERAGE_WEIGHT: float = 0.4
+
 logger = structlog.get_logger()
 
 
@@ -355,6 +363,134 @@ class RAGEngine:
             }
             for r in results
         ]
+
+    async def retrieve_adaptive(
+        self,
+        query: str,
+        min_k: int = DEFAULT_MIN_K,
+        max_k: int = DEFAULT_MAX_K,
+        confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+        query_entities: list[str] | None = None,
+        category: str | None = None,
+    ) -> dict:
+        """Adaptive retrieval with confidence-based stopping.
+
+        Fetches max_k results from LanceDB, then returns only as many as needed
+        based on confidence threshold. Simplified version of Stop-RAG.
+
+        Returns dict with keys:
+            results: list[dict] -- same format as retrieve()
+            chunks_retrieved: int
+            confidence: float
+            stop_reason: str -- "threshold" or "max_k" or "no_results"
+        """
+        try:
+            query_embedding = await self._get_embedding(query)
+        except RetryError:
+            logger.warning("retrieve_adaptive_embedding_failed", query=query[:80])
+            return {
+                "results": [],
+                "chunks_retrieved": 0,
+                "confidence": 0.0,
+                "stop_reason": "no_results",
+            }
+
+        # Search LanceDB with limit=max_k
+        results = self._table.search(query_embedding).limit(max_k)
+
+        if category:
+            results = results.where(f"category = '{category}'")
+
+        results = results.to_list()
+
+        if not results:
+            return {
+                "results": [],
+                "chunks_retrieved": 0,
+                "confidence": 0.0,
+                "stop_reason": "no_results",
+            }
+
+        # Convert distance to similarity and filter
+        candidates = []
+        for r in results:
+            distance = r.get("_distance", 0)
+            similarity = max(0.0, min(1.0, 1.0 - distance))
+            if similarity >= MIN_SIMILARITY_FLOOR:
+                candidates.append(
+                    {
+                        "text": r["text"],
+                        "source": r["source"],
+                        "category": r["category"],
+                        "score": similarity,
+                    }
+                )
+
+        # Sort by similarity descending (should already be sorted, but ensure)
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+
+        if not candidates:
+            return {
+                "results": [],
+                "chunks_retrieved": 0,
+                "confidence": 0.0,
+                "stop_reason": "no_results",
+            }
+
+        # Iterate and accumulate with confidence-based stopping
+        selected: list[dict] = []
+        confidence = 0.0
+        stop_reason = "max_k"
+
+        for candidate in candidates:
+            selected.append(candidate)
+            confidence = self._compute_confidence(
+                [s["score"] for s in selected],
+                [s["text"] for s in selected],
+                query_entities=query_entities,
+            )
+            if len(selected) >= min_k and confidence >= confidence_threshold:
+                stop_reason = "threshold"
+                break
+            if len(selected) >= max_k:
+                stop_reason = "max_k"
+                break
+
+        logger.info(
+            "retrieve_adaptive_done",
+            chunks_retrieved=len(selected),
+            confidence=round(confidence, 4),
+            stop_reason=stop_reason,
+        )
+
+        return {
+            "results": selected,
+            "chunks_retrieved": len(selected),
+            "confidence": confidence,
+            "stop_reason": stop_reason,
+        }
+
+    def _compute_confidence(
+        self,
+        similarities: list[float],
+        result_texts: list[str],
+        query_entities: list[str] | None = None,
+    ) -> float:
+        """Compute retrieval confidence from similarity scores and entity coverage."""
+        if not similarities:
+            return 0.0
+
+        similarity_confidence = sum(similarities) / len(similarities)
+
+        if not query_entities:
+            return similarity_confidence
+
+        # Entity coverage: how many query entities appear in result texts
+        combined_text = " ".join(result_texts).lower()
+        found = sum(1 for e in query_entities if e.lower() in combined_text)
+        entity_coverage = found / len(query_entities)
+
+        return SIMILARITY_WEIGHT * similarity_confidence + COVERAGE_WEIGHT * entity_coverage
 
     async def query_with_context(
         self,

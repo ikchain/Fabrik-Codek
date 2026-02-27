@@ -10,7 +10,10 @@ import httpx
 import pytest
 from tenacity import RetryError
 
-from src.knowledge.rag import EMBEDDING_DIM, RAGEngine
+from src.knowledge.rag import (
+    EMBEDDING_DIM,
+    RAGEngine,
+)
 
 
 @pytest.fixture
@@ -1439,6 +1442,263 @@ class TestGetRagEngine:
                 if rag_module._rag_engine and rag_module._rag_engine._http_client:
                     await rag_module._rag_engine.close()
                 rag_module._rag_engine = None
+
+            asyncio.run(_run())
+
+        _test()
+
+
+# ---------------------------------------------------------------------------
+# Adaptive Retrieval (FC-46)
+# ---------------------------------------------------------------------------
+
+
+def _make_adaptive_engine():
+    """Create a RAGEngine with mocked internals for adaptive retrieval tests."""
+    engine = _make_engine()
+    _setup_mock_http(engine)
+    return engine
+
+
+def _mock_table_search(engine, results):
+    """Mock the _table.search chain to return given results.
+
+    Each result should be a dict with text, source, category, _distance.
+    """
+    mock_to_list = MagicMock()
+    mock_to_list.to_list.return_value = results
+    mock_to_list.where.return_value = mock_to_list  # for category filter chaining
+    mock_limit = MagicMock()
+    mock_limit.limit.return_value = mock_to_list
+    # search() returns object with limit()
+    mock_search = MagicMock()
+    mock_search.limit.return_value = mock_to_list
+    engine._table = MagicMock()
+    engine._table.search.return_value = mock_search
+
+
+class TestAdaptiveRetrieval:
+    """Tests for retrieve_adaptive() and _compute_confidence() (FC-46)."""
+
+    def test_retrieve_adaptive_stops_at_threshold(self):
+        """High-similarity results reach threshold before max_k."""
+
+        def _test():
+            async def _run():
+                engine = _make_adaptive_engine()
+                _mock_table_search(
+                    engine,
+                    [
+                        {"text": "result1", "source": "f1", "category": "c1", "_distance": 0.1},
+                        {"text": "result2", "source": "f2", "category": "c2", "_distance": 0.15},
+                        {"text": "result3", "source": "f3", "category": "c3", "_distance": 0.2},
+                        {"text": "result4", "source": "f4", "category": "c4", "_distance": 0.3},
+                    ],
+                )
+
+                result = await engine.retrieve_adaptive(
+                    "test query",
+                    min_k=1,
+                    max_k=8,
+                    confidence_threshold=0.7,
+                )
+
+                assert result["stop_reason"] == "threshold"
+                assert result["chunks_retrieved"] < 4
+                assert result["confidence"] >= 0.7
+
+            asyncio.run(_run())
+
+        _test()
+
+    def test_retrieve_adaptive_respects_min_k(self):
+        """Even with high confidence on first result, returns at least min_k."""
+
+        def _test():
+            async def _run():
+                engine = _make_adaptive_engine()
+                _mock_table_search(
+                    engine,
+                    [
+                        {"text": "result1", "source": "f1", "category": "c1", "_distance": 0.05},
+                        {"text": "result2", "source": "f2", "category": "c2", "_distance": 0.1},
+                        {"text": "result3", "source": "f3", "category": "c3", "_distance": 0.15},
+                    ],
+                )
+
+                result = await engine.retrieve_adaptive(
+                    "test query",
+                    min_k=2,
+                    max_k=8,
+                    confidence_threshold=0.5,
+                )
+
+                assert result["chunks_retrieved"] >= 2
+
+            asyncio.run(_run())
+
+        _test()
+
+    def test_retrieve_adaptive_respects_max_k(self):
+        """Low confidence means it returns up to max_k."""
+
+        def _test():
+            async def _run():
+                engine = _make_adaptive_engine()
+                _mock_table_search(
+                    engine,
+                    [
+                        {"text": f"result{i}", "source": f"f{i}", "category": "c", "_distance": 0.6}
+                        for i in range(10)
+                    ],
+                )
+
+                result = await engine.retrieve_adaptive(
+                    "test query",
+                    min_k=1,
+                    max_k=3,
+                    confidence_threshold=0.99,
+                )
+
+                assert result["chunks_retrieved"] <= 3
+                assert result["stop_reason"] == "max_k"
+
+            asyncio.run(_run())
+
+        _test()
+
+    def test_retrieve_adaptive_filters_low_similarity(self):
+        """Results with similarity < MIN_SIMILARITY_FLOOR are excluded."""
+
+        def _test():
+            async def _run():
+                engine = _make_adaptive_engine()
+                _mock_table_search(
+                    engine,
+                    [
+                        {"text": "good", "source": "f1", "category": "c1", "_distance": 0.1},
+                        {"text": "bad1", "source": "f2", "category": "c2", "_distance": 0.9},
+                        {"text": "bad2", "source": "f3", "category": "c3", "_distance": 1.5},
+                    ],
+                )
+
+                result = await engine.retrieve_adaptive(
+                    "test query",
+                    min_k=1,
+                    max_k=8,
+                    confidence_threshold=0.5,
+                )
+
+                # Only the first result has similarity >= MIN_SIMILARITY_FLOOR (0.2)
+                texts = [r["text"] for r in result["results"]]
+                assert "good" in texts
+                assert "bad1" not in texts
+                assert "bad2" not in texts
+
+            asyncio.run(_run())
+
+        _test()
+
+    def test_retrieve_adaptive_no_results(self):
+        """Empty table returns no_results stop_reason."""
+
+        def _test():
+            async def _run():
+                engine = _make_adaptive_engine()
+                _mock_table_search(engine, [])
+
+                result = await engine.retrieve_adaptive("test query")
+
+                assert result["chunks_retrieved"] == 0
+                assert result["confidence"] == 0.0
+                assert result["stop_reason"] == "no_results"
+                assert result["results"] == []
+
+            asyncio.run(_run())
+
+        _test()
+
+    def test_compute_confidence_similarity_only(self):
+        """No entities -> similarity average."""
+        engine = _make_engine()
+
+        confidence = engine._compute_confidence(
+            [0.8, 0.9, 0.7],
+            ["text1", "text2", "text3"],
+        )
+        expected = (0.8 + 0.9 + 0.7) / 3
+        assert abs(confidence - expected) < 0.001
+
+    def test_compute_confidence_with_entities(self):
+        """Entity coverage affects combined score."""
+        engine = _make_engine()
+
+        confidence = engine._compute_confidence(
+            [0.8, 0.9],
+            ["fastapi is great", "pydantic validates data"],
+            query_entities=["fastapi", "pydantic", "docker"],
+        )
+        # similarity_confidence = (0.8 + 0.9) / 2 = 0.85
+        # entity_coverage = 2/3 (fastapi and pydantic found, docker not)
+        # combined = 0.6 * 0.85 + 0.4 * (2/3) = 0.51 + 0.2667 = 0.7767
+        expected = 0.6 * 0.85 + 0.4 * (2 / 3)
+        assert abs(confidence - expected) < 0.001
+
+    def test_compute_confidence_empty(self):
+        """Empty input returns 0.0."""
+        engine = _make_engine()
+        assert engine._compute_confidence([], []) == 0.0
+
+    def test_retrieve_adaptive_returns_metadata(self):
+        """Response has chunks_retrieved, confidence, stop_reason keys."""
+
+        def _test():
+            async def _run():
+                engine = _make_adaptive_engine()
+                _mock_table_search(
+                    engine,
+                    [
+                        {"text": "result1", "source": "f1", "category": "c1", "_distance": 0.1},
+                    ],
+                )
+
+                result = await engine.retrieve_adaptive("test query")
+
+                assert "results" in result
+                assert "chunks_retrieved" in result
+                assert "confidence" in result
+                assert "stop_reason" in result
+                assert isinstance(result["results"], list)
+                assert isinstance(result["chunks_retrieved"], int)
+                assert isinstance(result["confidence"], float)
+                assert isinstance(result["stop_reason"], str)
+
+            asyncio.run(_run())
+
+        _test()
+
+    def test_retrieve_adaptive_backward_compat(self):
+        """Existing retrieve() still works unchanged."""
+
+        def _test():
+            async def _run():
+                engine = _make_adaptive_engine()
+
+                # Mock table for regular retrieve
+                mock_to_list = MagicMock()
+                mock_to_list.to_list.return_value = [
+                    {"text": "result1", "source": "f1", "category": "c1", "_distance": 0.1},
+                ]
+                mock_search = MagicMock()
+                mock_search.limit.return_value = mock_to_list
+                engine._table = MagicMock()
+                engine._table.search.return_value = mock_search
+
+                results = await engine.retrieve("test query", limit=5)
+                assert isinstance(results, list)
+                assert len(results) == 1
+                assert results[0]["text"] == "result1"
+                assert results[0]["score"] == 0.1
 
             asyncio.run(_run())
 

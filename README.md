@@ -4,7 +4,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests: 847](https://img.shields.io/badge/tests-847%20passing-brightgreen.svg)]()
+[![Tests: 957](https://img.shields.io/badge/tests-957%20passing-brightgreen.svg)]()
 
 > A 7B model that knows you is worth more than a 400B that doesn't.
 
@@ -124,7 +124,8 @@ Every interaction feeds back into the system. The more you use it, the better it
 
 ### Knowledge & Retrieval
 
-- **Three-Tier Hybrid RAG** — Vector search (LanceDB) + knowledge graph traversal (NetworkX) + full-text search (Meilisearch), fused with Reciprocal Rank Fusion
+- **Three-Tier Hybrid RAG** — Vector search (LanceDB) + graph-guided chunk expansion (NetworkX) + full-text search (Meilisearch), fused with Reciprocal Rank Fusion
+- **Graph-Guided Retrieval** — Builds composite expansion queries from knowledge graph neighborhoods (e.g., "FastAPI Pydantic") instead of entity-name-only searches
 - **Knowledge Graph** — Automatically extracts entities and relationships from training data, code changes, and session transcripts
 - **11-Step Extraction Pipeline** — From raw data through graph completion, temporal decay, alias deduplication, drift detection, and neighborhood snapshots
 - **Graph Temporal Decay** — `weight = base * 0.5^(days/half_life)` keeps knowledge fresh
@@ -134,11 +135,12 @@ Every interaction feeds back into the system. The more you use it, the better it
 
 ### Personalization
 
-- **Personal Profile** — Learns your domain, stack, architecture, and tooling preferences from the datalake. Injected as system prompt
-- **Competence Model** — 4 signals (entry count, graph density, recency, outcome rate) with 8 weight sets for graceful degradation
-- **Adaptive Task Router** — Hybrid classification (keyword matching + LLM fallback) with per-task retrieval strategies and model escalation
+- **Personal Profile** — Learns your domain, stack, architecture, and tooling preferences from the datalake. Supports incremental builds with drift detection and EMA merge
+- **Competence Model** — 4 signals (entry count, graph density, recency, outcome rate) with 8 weight sets and adaptive forgetting curves per topic
+- **Adaptive Task Router** — 3-level classification chain: learned TF-IDF classifier, keyword matching, and LLM fallback. Per-task retrieval strategies and model escalation
+- **Adaptive Retrieval** — Confidence-based stopping: fetches up to `max_k` results but returns only what's needed, with per-task thresholds
 - **Outcome Tracking** — Infers response quality from conversational patterns (topic changes, reformulations, negation) without manual feedback
-- **Strategy Optimizer** — Generates retrieval overrides for weak task/topic combinations
+- **Strategy Optimizer** — Thompson Sampling (Multi-Armed Bandit) selects optimal retrieval strategy per task/topic. Falls back to static overrides when insufficient data
 
 ### Interfaces
 
@@ -161,9 +163,13 @@ The five components that make Fabrik-Codek personal:
 Analyzes your datalake and generates behavioral instructions for the LLM.
 
 ```bash
-fabrik profile build   # Analyze datalake, build profile
-fabrik profile show    # View current profile
+fabrik profile build                # Full build from datalake
+fabrik profile build-incremental    # Only process new entries since last build
+fabrik profile drift                # View topic drift history
+fabrik profile show                 # View current profile
 ```
+
+Incremental mode uses timestamp filtering, cosine-distance drift detection, and EMA merge (alpha=0.7 on drift, 0.3 normal) to update the profile without re-scanning the entire datalake.
 
 Example output from a real datalake:
 
@@ -212,9 +218,9 @@ fabrik router test -q "optimize my PostgreSQL query"   # Debug classification
 ```
 
 - **7 task types**: debugging, code_review, architecture, explanation, testing, devops, ml_engineering
-- **Hybrid classification**: Keyword matching (zero latency) with LLM fallback
+- **3-level classification chain**: Learned TF-IDF classifier (trained on accepted outcomes) → keyword matching → LLM fallback
 - **Model escalation**: Expert/Competent topics use default model; Novice/Unknown escalate to fallback
-- **Per-task retrieval**: Different graph_depth and vector/graph weights per task type
+- **Per-task retrieval**: Different graph_depth, vector/graph weights, and confidence thresholds per task type
 - **3-layer system prompt**: Personal Profile + Competence fragment + task-specific instruction
 
 ### Outcome Tracking
@@ -233,11 +239,12 @@ The tracker observes conversational patterns between turns:
 
 ### Strategy Optimizer
 
-Automatically adjusts retrieval for underperforming combinations:
+Uses **Thompson Sampling** (Multi-Armed Bandit) to learn optimal retrieval strategies from outcome data:
 
-- High acceptance rate (>= 0.7): keep current strategy
-- Medium (0.5-0.7): mild boost to graph depth and weights
-- Low (< 0.5): strong boost — deeper graph traversal, heavier graph weight
+- 4 discrete arms: default, graph_boost, deep_graph, vector_focus
+- Beta distributions updated with acceptance/rejection feedback
+- Falls back to static overrides when fewer than 5 samples per arm
+- Static overrides: high acceptance (>= 0.7) keeps strategy; low (< 0.5) boosts graph depth and weights
 
 Overrides are persisted and loaded by the Task Router on next query.
 

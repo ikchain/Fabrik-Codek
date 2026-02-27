@@ -1,6 +1,7 @@
-"""Tests for OutcomeRecord, infer_outcome, and OutcomeTracker."""
+"""Tests for OutcomeRecord, infer_outcome, and OutcomeTracker (FC-38)."""
 
 import json
+from pathlib import Path
 
 from src.core.task_router import RetrievalStrategy, RoutingDecision
 from src.flywheel.outcome_tracker import (
@@ -395,3 +396,81 @@ class TestOutcomeTrackerTruncation:
         result = tracker.close_session()
         assert result is not None
         assert len(result.response_summary) <= 200
+
+
+# ---------------------------------------------------------------------------
+# arm_id storage (FC-42)
+# ---------------------------------------------------------------------------
+
+
+class TestArmIdStorage:
+    """Verify arm_id from RoutingDecision is stored in outcome strategy dict."""
+
+    def test_arm_id_stored_in_strategy(self, tmp_path: Path) -> None:
+        """When RoutingDecision has arm_id, it appears in outcome strategy."""
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockStrategy:
+            use_rag: bool = True
+            use_graph: bool = True
+            graph_depth: int = 2
+            vector_weight: float = 0.6
+            graph_weight: float = 0.4
+            fulltext_weight: float = 0.0
+
+        @dataclass
+        class MockDecision:
+            task_type: str = "debugging"
+            topic: str | None = "postgresql"
+            competence_level: str = "Competent"
+            model: str = "test-model"
+            strategy: MockStrategy = None
+            arm_id: str | None = "graph_boost"
+
+            def __post_init__(self):
+                if self.strategy is None:
+                    self.strategy = MockStrategy()
+
+        tracker = OutcomeTracker(tmp_path, "test-session")
+        decision = MockDecision()
+
+        tracker.record_turn("query about postgresql", "response1", decision, 100.0)
+        outcome = tracker.record_turn("different topic entirely", "response2", decision, 100.0)
+
+        assert outcome is not None
+        assert outcome.strategy.get("arm_id") == "graph_boost"
+
+    def test_no_arm_id_when_not_present(self, tmp_path: Path) -> None:
+        """When decision has no arm_id, strategy dict does not contain arm_id."""
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockStrategy:
+            use_rag: bool = True
+            use_graph: bool = True
+            graph_depth: int = 2
+            vector_weight: float = 0.6
+            graph_weight: float = 0.4
+            fulltext_weight: float = 0.0
+
+        @dataclass
+        class MockDecisionNoArm:
+            task_type: str = "debugging"
+            topic: str | None = "postgresql"
+            competence_level: str = "Competent"
+            model: str = "test-model"
+            strategy: MockStrategy = None
+
+            def __post_init__(self):
+                if self.strategy is None:
+                    self.strategy = MockStrategy()
+
+        tracker = OutcomeTracker(tmp_path, "test-session")
+        decision = MockDecisionNoArm()
+
+        tracker.record_turn("query about postgresql", "response1", decision, 100.0)
+        outcome = tracker.record_turn("different topic entirely", "response2", decision, 100.0)
+
+        assert outcome is not None
+        assert "arm_id" not in outcome.strategy

@@ -181,6 +181,7 @@ class GraphEngine:
             edge_meta = edge_data.get("metadata", {})
             edge_meta["base_weight"] = new_weight
             edge_meta["last_reinforced"] = now_iso
+            edge_meta["reinforcement_count"] = edge_meta.get("reinforcement_count", 0) + 1
             edge_data["metadata"] = edge_meta
             # Merge source_docs
             existing_docs = edge_data.get("source_docs", [])
@@ -523,6 +524,9 @@ class GraphEngine:
 
     # --- Temporal Decay ---
 
+    REINFORCEMENT_FACTOR: float = 0.3
+    REINFORCEMENT_EXPONENT: float = 0.5
+
     def apply_decay(
         self,
         half_life_days: float = 90.0,
@@ -547,6 +551,8 @@ class GraphEngine:
         edges_skipped = 0
         min_weight = float("inf")
         max_weight = 0.0
+        total_reinforcement_count = 0
+        max_reinforcement_count = 0
 
         for _src, _tgt, data in self._graph.edges(data=True):
             meta = data.get("metadata", {})
@@ -560,7 +566,13 @@ class GraphEngine:
             if days_elapsed < 0:
                 days_elapsed = 0.0
 
-            decay_factor = 0.5 ** (days_elapsed / half_life_days)
+            reinforcement_count = meta.get("reinforcement_count", 0)
+            effective_half_life = (
+                half_life_days
+                * (1 + self.REINFORCEMENT_FACTOR * reinforcement_count)
+                ** self.REINFORCEMENT_EXPONENT
+            )
+            decay_factor = 0.5 ** (days_elapsed / effective_half_life)
             base_weight = meta.get("base_weight", data.get("weight", 0.5))
             new_weight = base_weight * decay_factor
 
@@ -569,6 +581,8 @@ class GraphEngine:
 
             min_weight = min(min_weight, new_weight)
             max_weight = max(max_weight, new_weight)
+            total_reinforcement_count += reinforcement_count
+            max_reinforcement_count = max(max_reinforcement_count, reinforcement_count)
             edges_decayed += 1
 
         if edges_decayed == 0:
@@ -579,6 +593,10 @@ class GraphEngine:
             "edges_skipped": edges_skipped,
             "min_weight_after": round(min_weight, 6),
             "max_weight_after": round(max_weight, 6),
+            "avg_reinforcement_count": (
+                round(total_reinforcement_count / edges_decayed, 2) if edges_decayed else 0.0
+            ),
+            "max_reinforcement_count": max_reinforcement_count,
         }
 
     # --- Alias Detection ---

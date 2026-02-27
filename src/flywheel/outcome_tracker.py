@@ -1,4 +1,4 @@
-"""Outcome Tracker - Infers whether a response was accepted or rejected.
+"""Outcome Tracker - Infers whether a response was accepted or rejected (FC-38).
 
 Uses heuristics on consecutive queries to determine if the user was satisfied
 with the previous response. This signal feeds back into the Competence Model
@@ -227,6 +227,11 @@ class OutcomeTracker:
             result = self._finalize_pending(outcome, reason)
 
         # Store current turn as new pending
+        strategy_dict = asdict(decision.strategy) if hasattr(decision, "strategy") else {}
+        arm_id = getattr(decision, "arm_id", None)
+        if arm_id is not None:
+            strategy_dict["arm_id"] = arm_id
+
         self._pending = {
             "query": query,
             "response": response[:_SUMMARY_MAX_LEN],
@@ -234,7 +239,7 @@ class OutcomeTracker:
             "topic": getattr(decision, "topic", None),
             "competence_level": getattr(decision, "competence_level", "Unknown"),
             "model": getattr(decision, "model", ""),
-            "strategy": asdict(decision.strategy) if hasattr(decision, "strategy") else {},
+            "strategy": strategy_dict,
             "latency_ms": latency_ms,
         }
 

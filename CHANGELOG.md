@@ -5,45 +5,65 @@ All notable changes to Fabrik-Codek are documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Thompson Sampling Strategy Optimizer** — Multi-Armed Bandit for retrieval strategy selection
+  - 4 discrete arms: default, graph_boost, deep_graph, vector_focus
+  - Beta distributions updated with outcome feedback (accepted/rejected)
+  - Graceful fallback to static overrides when < 5 samples per arm
+  - Integrated into CLI chat/ask and `fabrik competence build`
+- **Adaptive Forgetting Curve** — Spaced repetition for knowledge decay
+  - `effective_half_life = base * (1 + 0.3 * reinforcement_count)^0.5`
+  - Reinforced entities decay slower; neglected entities fade faster
+  - Integrated into `apply_decay()` with backward-compatible edge format
+- **Graph-Guided Chunk Expansion (KG2RAG)** — Better graph retrieval via composite queries
+  - Builds expansion queries from graph neighborhoods (e.g., "FastAPI Pydantic")
+  - Deduplicates symmetric pairs, sorts by proximity score
+  - Replaces entity-name-only graph search with context-rich composite queries
+- **Incremental Profile Build (SPRInG)** — Update profile without full datalake rescan
+  - Timestamp filtering: only analyzes entries since last build
+  - Drift detection: cosine distance between old and new topic distributions
+  - EMA merge: alpha=0.7 on drift, 0.3 on gradual change
+  - Replay buffer: stores top-20 most novel new entries
+  - CLI: `fabrik profile build-incremental` and `fabrik profile drift`
+- **Adaptive Retrieval (Stop-RAG)** — Confidence-based stopping for vector search
+  - `retrieve_adaptive()`: fetches max_k results but returns only what's needed
+  - Combined confidence: `0.6 * similarity_avg + 0.4 * entity_coverage`
+  - Per-task thresholds in RetrievalStrategy (e.g., debugging=0.6, explanation=0.8)
+  - Integrated into HybridRAGEngine when `confidence_threshold` is set
+- **Learned Task Router (TF-IDF)** — Classification learned from accepted outcomes
+  - TF-IDF vectorizer with centroid-per-task-type classification
+  - 3-level chain: learned (confidence >= 0.3) → keywords → LLM fallback
+  - Corpus auto-built from outcomes during `fabrik competence build`
+  - sklearn import-guarded: degrades gracefully when unavailable
+  - Loaded in all entry points: CLI chat/ask, API, MCP, and router test
 - **Graph Temporal Decay** — Exponential weight decay for knowledge graph edges
   - Edges store `base_weight` and `last_reinforced` timestamps; entities store `last_seen`
   - `apply_decay()`: idempotent formula `weight = base_weight * 0.5^(days/half_life)`
   - Integrated into pipeline build (runs after graph completion, before save)
   - CLI: `fabrik graph decay --dry-run --half-life 90`
   - Config: `FABRIK_GRAPH_DECAY_HALF_LIFE_DAYS` (default: 90)
-  - 11 new tests (4 timestamps + 7 decay including idempotency and prune integration)
 - **Competence Model** — Knowledge depth scoring per topic
-  - `CompetenceBuilder` analyzes 3 signals: entry count (log scale), entity density (graph), recency (exponential decay)
-  - 4 adaptive weight sets with graceful degradation when signals are missing
+  - `CompetenceBuilder` analyzes 4 signals: entry count (log scale), entity density (graph), recency (exponential decay), outcome rate
+  - 8 adaptive weight sets with graceful degradation when signals are missing
   - Competence levels: Expert (>=0.8), Competent (>=0.4), Novice (>=0.1), Unknown (<0.1)
-  - System prompt injection: competence fragment appended after Personal Profile
   - CLI: `fabrik competence build` and `fabrik competence show`
-  - Persistence with JSON caching (`data/profile/competence_map.json`)
-  - 89 new tests
 - **Meilisearch full-text search** — Optional BM25-style keyword search as third retrieval tier
   - `FullTextEngine` async wrapper using httpx (no new dependencies)
   - Three-tier Reciprocal Rank Fusion (RRF): vector + graph + fulltext
   - CLI: `fabrik fulltext status|index|search`
-  - API: `POST /fulltext/search` endpoint
-  - MCP: `fabrik_fulltext_search` tool
-  - 4 new config settings: `FABRIK_MEILISEARCH_URL`, `FABRIK_MEILISEARCH_KEY`, `FABRIK_MEILISEARCH_INDEX`, `FABRIK_FULLTEXT_WEIGHT`
   - Graceful degradation — works without Meilisearch (`fulltext_weight=0.0` by default)
-  - 55 new tests (29 fulltext engine + 8 hybrid RRF + 8 MCP + 4 API + 6 CLI)
 - **Adaptive Task Router** — Intelligent query classification and routing
-  - Hybrid classification: keyword matching (7 task types) + LLM fallback
+  - 3-level classification chain: learned TF-IDF → keyword matching → LLM fallback
   - Topic detection from CompetenceMap with automatic model escalation
-  - Per-task retrieval strategies (graph depth, vector/graph weights)
+  - Per-task retrieval strategies with confidence thresholds
   - 3-layer system prompt: personal profile + competence + task-specific instructions
-  - Model escalation: Novice/Unknown topics automatically use fallback model
   - CLI: `fabrik router test -q "query"` for classification debugging
   - Integrated into CLI (`ask`, `chat`), API (`/ask`), and MCP (`fabrik_ask`)
-  - 63 new tests (data model + classification + topic + strategy + escalation + prompt + LLM + integration)
 
 ### Changed
 - All CLI messages, prompts, and logger errors translated from Spanish to English
 - `HybridRAGEngine._rrf_fusion()` extended to accept optional fulltext results
 - Multi-source origin tracking: results found in multiple sources tagged as `"hybrid"`
-- Test count: 527 → 711
+- Test count: 527 → 957
 
 ## [1.2.1] - 2026-02-19
 

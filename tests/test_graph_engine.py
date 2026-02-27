@@ -891,11 +891,137 @@ class TestDecay:
         assert engine.get_entity("b") is None
 
 
+# --- Adaptive Forgetting Curve ---
+
+
+class TestAdaptiveForgettingCurve:
+    """Tests for adaptive forgetting curve with reinforcement count (FC-43)."""
+
+    def _make_edge_with_age(
+        self, engine, weight, days_ago, src="a", tgt="b", reinforcement_count=0
+    ):
+        """Helper: create an edge with given age and reinforcement count."""
+        engine.add_entity(Entity(id=src, name=src, entity_type=EntityType.TECHNOLOGY))
+        engine.add_entity(Entity(id=tgt, name=tgt, entity_type=EntityType.TECHNOLOGY))
+        past = datetime.now(tz=UTC) - timedelta(days=days_ago)
+        engine._graph.add_edge(
+            src,
+            tgt,
+            source_id=src,
+            target_id=tgt,
+            relation_type=RelationType.USES.value,
+            weight=weight,
+            source_docs=[],
+            metadata={
+                "base_weight": weight,
+                "last_reinforced": past.isoformat(),
+                "reinforcement_count": reinforcement_count,
+            },
+        )
+
+    def test_reinforced_edge_decays_slower(self, engine):
+        """Edge with high reinforcement_count should have higher weight after decay."""
+        self._make_edge_with_age(
+            engine, weight=1.0, days_ago=90, src="a", tgt="b", reinforcement_count=0
+        )
+        self._make_edge_with_age(
+            engine, weight=1.0, days_ago=90, src="c", tgt="d", reinforcement_count=10
+        )
+        engine.apply_decay(half_life_days=90.0)
+        weight_no_reinforce = engine._graph.edges["a", "b"]["weight"]
+        weight_with_reinforce = engine._graph.edges["c", "d"]["weight"]
+        # Reinforced edge should decay less
+        assert weight_with_reinforce > weight_no_reinforce
+        # Non-reinforced at exactly 1 half-life should be ~0.5
+        assert abs(weight_no_reinforce - 0.5) < 0.01
+
+    def test_zero_reinforcement_matches_fixed_decay(self, engine):
+        """With reinforcement_count=0, behavior is identical to fixed half-life."""
+        self._make_edge_with_age(engine, weight=1.0, days_ago=90, reinforcement_count=0)
+        engine.apply_decay(half_life_days=90.0)
+        weight = engine._graph.edges["a", "b"]["weight"]
+        # At exactly 1 half-life: 1.0 * 0.5^1 = 0.5
+        assert abs(weight - 0.5) < 0.01
+
+    def test_missing_reinforcement_count_defaults_to_zero(self, engine):
+        """Edge without reinforcement_count metadata uses default 0."""
+        engine.add_entity(Entity(id="a", name="a", entity_type=EntityType.TECHNOLOGY))
+        engine.add_entity(Entity(id="b", name="b", entity_type=EntityType.TECHNOLOGY))
+        past = datetime.now(tz=UTC) - timedelta(days=90)
+        engine._graph.add_edge(
+            "a",
+            "b",
+            source_id="a",
+            target_id="b",
+            relation_type=RelationType.USES.value,
+            weight=1.0,
+            source_docs=[],
+            metadata={"base_weight": 1.0, "last_reinforced": past.isoformat()},
+        )
+        engine.apply_decay(half_life_days=90.0)
+        weight = engine._graph.edges["a", "b"]["weight"]
+        assert abs(weight - 0.5) < 0.01
+
+    def test_add_relation_increments_reinforcement_count(self, engine):
+        """Reinforcing an existing edge increments reinforcement_count."""
+        engine.add_entity(Entity(id="a", name="a", entity_type=EntityType.TECHNOLOGY))
+        engine.add_entity(Entity(id="b", name="b", entity_type=EntityType.TECHNOLOGY))
+        rel = Relation(
+            source_id="a",
+            target_id="b",
+            relation_type=RelationType.USES,
+            weight=0.5,
+            source_docs=["doc1"],
+        )
+        engine.add_relation(rel)  # First add
+        meta = engine._graph.edges["a", "b"]["metadata"]
+        assert meta.get("reinforcement_count", 0) == 0  # First add, not a reinforcement
+
+        engine.add_relation(rel)  # Second add = first reinforcement
+        meta = engine._graph.edges["a", "b"]["metadata"]
+        assert meta["reinforcement_count"] == 1
+
+        engine.add_relation(rel)  # Third add = second reinforcement
+        meta = engine._graph.edges["a", "b"]["metadata"]
+        assert meta["reinforcement_count"] == 2
+
+    def test_high_reinforcement_slows_decay_significantly(self, engine):
+        """Edge reinforced 50 times should retain most of its weight over 90 days."""
+        self._make_edge_with_age(engine, weight=1.0, days_ago=90, reinforcement_count=50)
+        engine.apply_decay(half_life_days=90.0)
+        weight = engine._graph.edges["a", "b"]["weight"]
+        # With 50 reinforcements: effective_half_life = 90 * (1 + 0.3*50)^0.5 = 90 * 4.0 = ~360 days
+        # At 90 days: 0.5^(90/360) = 0.5^0.25 ≈ 0.84
+        assert weight > 0.80
+
+    def test_decay_stats_include_reinforcement_info(self, engine):
+        """apply_decay returns avg_reinforcement_count and max_reinforcement_count."""
+        self._make_edge_with_age(
+            engine, weight=1.0, days_ago=30, src="a", tgt="b", reinforcement_count=5
+        )
+        self._make_edge_with_age(
+            engine, weight=1.0, days_ago=30, src="c", tgt="d", reinforcement_count=15
+        )
+        result = engine.apply_decay(half_life_days=90.0)
+        assert result["max_reinforcement_count"] == 15
+        assert result["avg_reinforcement_count"] == 10.0
+
+    def test_adaptive_decay_idempotent(self, engine):
+        """Adaptive decay is still idempotent (recomputes from base_weight)."""
+        self._make_edge_with_age(engine, weight=0.8, days_ago=45, reinforcement_count=5)
+        ref_time = datetime.now(tz=UTC)
+        engine.apply_decay(half_life_days=90.0, reference_time=ref_time)
+        w1 = engine._graph.edges["a", "b"]["weight"]
+        engine.apply_decay(half_life_days=90.0, reference_time=ref_time)
+        w2 = engine._graph.edges["a", "b"]["weight"]
+        assert abs(w1 - w2) < 1e-9
+
+
 # --- Alias Detection ---
 
 
 class TestAliasDetection:
-    """Tests for dynamic alias detection."""
+    """Tests for dynamic alias detection (FC-40)."""
 
     def test_cosine_similarity_identical(self):
         from src.knowledge.graph_engine import _cosine_similarity

@@ -1,7 +1,7 @@
 ---
 name: fabrik-codek
 description: "Personal cognitive architecture that learns how you work. Builds a knowledge graph from your sessions, profiles your expertise, adapts retrieval per task, and self-corrects via outcome feedback. Three-tier hybrid RAG (vector + graph + full-text). 100% local with any Ollama model."
-version: 1.7.0
+version: 1.7.1
 homepage: https://github.com/ikchain/Fabrik-Codek
 user-invocable: true
 metadata:
@@ -163,16 +163,65 @@ Strategy Optimizer ← Outcome Tracker ← LLM responds with context
 
 ## Requirements
 
-- [Fabrik-Codek](https://github.com/ikchain/Fabrik-Codek) installed (`pip install fabrik-codek`)
+- [Fabrik-Codek](https://github.com/ikchain/Fabrik-Codek) installed from source (`git clone` + `pip install -e ".[dev]"`)
 - [Ollama](https://ollama.ai/) running locally with any model (e.g., `ollama pull qwen2.5-coder:7b`)
 - Optional: [Meilisearch](https://meilisearch.com/) for full-text search (system works without it)
 
+**Note on installation**: Fabrik-Codek is installed directly from the [GitHub repository](https://github.com/ikchain/Fabrik-Codek), not from PyPI. This lets you audit the source code before installing. The `pip install` metadata in this skill declares the package name for dependency resolution, but the actual install is from the cloned repo.
+
 ## Security & Privacy
 
-- **100% local**: All data stays on your machine. No external API calls, no telemetry, no cloud dependencies
-- **No credentials required**: Connects only to your local Ollama instance (`localhost:11434`)
-- **No external endpoints**: This skill does not contact any external services
-- **Data paths**: Reads transcript files from `~/.claude/projects/*/` (local JSON already on disk). Writes to `./data/embeddings/` (vector DB), `./data/graphdb/` (knowledge graph), and `./data/profile/` (personal profile). All paths are declared in the skill metadata
-- **Session reading**: `fabrik learn` is opt-in — triggered manually by the user, not automatic background surveillance. Transcripts may contain sensitive data; review before indexing
-- **Network exposure**: Default transport is `stdio` (no network). SSE transport binds to `127.0.0.1` by default. If you change the bind address, ensure proper firewall/ACL rules
-- **Open source**: Fully auditable at [github.com/ikchain/Fabrik-Codek](https://github.com/ikchain/Fabrik-Codek) (MIT license)
+### No external network calls
+
+Fabrik-Codek makes **zero outbound network requests**. It connects only to services running on your own machine:
+
+- **Ollama** at `localhost:11434` — your locally running LLM server
+- **Meilisearch** at `localhost:7700` (optional) — your locally running search engine
+
+No telemetry, no analytics, no phone-home. Verify in the source: `grep -r "requests\.\|httpx\.\|urllib" src/` returns zero hits on outbound calls.
+
+### What `fabrik init` does
+
+`fabrik init` performs these local-only operations:
+
+1. Checks Python version (>= 3.11)
+2. Detects if Ollama is running at `localhost:11434`
+3. Creates a `.env` config file in the current directory
+4. Creates local data directories (`./data/embeddings/`, `./data/graphdb/`, `./data/profile/`)
+5. Pulls Ollama models via `ollama pull` — models are downloaded **by Ollama itself** from [ollama.ai/library](https://ollama.ai/library), not by Fabrik-Codek
+
+Fabrik-Codek does not download any files from any server. Model downloads are handled entirely by Ollama's own CLI.
+
+### Data access scope
+
+**Reads** (all local, all opt-in):
+
+| Path | What | When |
+|------|------|------|
+| `~/.claude/projects/*/` | Session transcript JSONL files (already on disk from Claude Code) | Only when you run `fabrik learn process` or `fabrik graph build --include-transcripts` |
+| `./data/` or `FABRIK_DATALAKE_PATH` | Your datalake (training pairs, captures, metadata) | During `graph build`, `rag index`, `profile build`, `competence build` |
+
+**Writes** (all local):
+
+| Path | What |
+|------|------|
+| `./data/embeddings/` | LanceDB vector index |
+| `./data/graphdb/` | NetworkX knowledge graph (JSON) |
+| `./data/profile/` | Personal profile, competence map, strategy overrides (JSON) |
+| `./data/01-raw/outcomes/` | Outcome tracking records (JSONL) |
+
+All paths are declared in the skill metadata `configPaths`. The skill never writes outside these directories.
+
+### Network transport
+
+- **Default: `stdio`** — no network listener, no ports opened, no exposure
+- **Optional: `sse`** — starts an HTTP server bound to **`127.0.0.1:8421`** by default (localhost only, not reachable from other machines)
+- If you change the SSE bind address to `0.0.0.0`, your indexed data would be accessible over the network. **Do not do this** without proper firewall/ACL rules
+
+### Session transcript privacy
+
+The `fabrik learn` command reads Claude Code session transcripts, which may contain sensitive data (code, credentials, conversation history). This command is **opt-in** — you must run it manually. It does not run in the background or on a schedule unless you explicitly configure `fabrik learn watch`. Review what's in your `~/.claude/projects/` before indexing.
+
+### Source verification
+
+Fully open source at [github.com/ikchain/Fabrik-Codek](https://github.com/ikchain/Fabrik-Codek) (MIT license). Clone the repo and audit before installing.

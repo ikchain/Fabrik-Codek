@@ -1003,7 +1003,13 @@ class TestAsk:
     """Tests for the ``ask`` command."""
 
     def _run_ask(
-        self, args, *, content="mock response", tokens_used=42, latency_ms=100.0, model="qwen2.5-coder:7b"
+        self,
+        args,
+        *,
+        content="mock response",
+        tokens_used=42,
+        latency_ms=100.0,
+        model="qwen2.5-coder:7b",
     ):
         """Helper to invoke ``ask`` with controlled mocks."""
         mock_resp = _make_llm_response(

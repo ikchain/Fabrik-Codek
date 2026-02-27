@@ -5,6 +5,7 @@ Works for any profession: developer, lawyer, doctor, etc.
 """
 
 import json
+import os
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -14,6 +15,12 @@ from typing import Any
 import structlog
 
 logger = structlog.get_logger()
+
+# SPRInG incremental build constants
+DRIFT_THRESHOLD: float = 0.3
+ALPHA_NORMAL: float = 0.3
+ALPHA_DRIFT: float = 0.7
+REPLAY_BUFFER_SIZE: int = 20
 
 CODE_EXTENSIONS = {
     ".py",
@@ -113,7 +120,7 @@ TASK_TYPE_CONSOLIDATION: dict[str, str | None] = {
     "python": "backend",
     # Security
     "security": "security",
-    "oauth": "security",
+    "keycloak": "security",
     # Testing
     "testing": "testing",
     # Refactoring (all sub-variants)
@@ -187,6 +194,10 @@ class PersonalProfile:
     task_types_detected: list[str] = field(default_factory=list)
     total_entries: int = 0
     built_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    last_build_timestamp: str | None = None
+    build_mode: str = "full"
+    drift_history: list[dict] = field(default_factory=list)
+    replay_buffer: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize profile to dictionary."""
@@ -199,6 +210,10 @@ class PersonalProfile:
             "task_types_detected": self.task_types_detected,
             "total_entries": self.total_entries,
             "built_at": self.built_at,
+            "last_build_timestamp": self.last_build_timestamp,
+            "build_mode": self.build_mode,
+            "drift_history": self.drift_history,
+            "replay_buffer": self.replay_buffer,
         }
 
     @classmethod
@@ -213,6 +228,10 @@ class PersonalProfile:
             task_types_detected=data.get("task_types_detected", []),
             total_entries=data.get("total_entries", 0),
             built_at=data.get("built_at", datetime.now().isoformat()),
+            last_build_timestamp=data.get("last_build_timestamp"),
+            build_mode=data.get("build_mode", "full"),
+            drift_history=data.get("drift_history", []),
+            replay_buffer=data.get("replay_buffer", []),
         )
 
     def to_system_prompt(self) -> str:
@@ -353,11 +372,14 @@ class DatalakeAnalyzer:
 
         return records
 
-    def analyze_training_pairs(self) -> dict:
+    def analyze_training_pairs(self, since: str | None = None) -> dict:
         """Scan training pairs and return category/tag statistics.
 
         Reads all ``*.jsonl`` files under ``02-processed/training-pairs/``
         and aggregates counts by category and tag.
+
+        Args:
+            since: ISO timestamp — only read files whose mtime >= this value.
 
         Returns:
             dict with keys: total_pairs, categories (Counter), tags (Counter)
@@ -370,7 +392,13 @@ class DatalakeAnalyzer:
         if not tp_dir.exists():
             return {"total_pairs": 0, "categories": categories, "tags": tags}
 
+        since_ts = datetime.fromisoformat(since).timestamp() if since else None
+
         for jsonl_file in sorted(tp_dir.glob("*.jsonl")):
+            if since_ts is not None:
+                file_mtime = os.path.getmtime(jsonl_file)
+                if file_mtime < since_ts:
+                    continue
             records = self._read_jsonl(jsonl_file)
             total_pairs += len(records)
             for record in records:
@@ -391,12 +419,17 @@ class DatalakeAnalyzer:
             "tags": tags,
         }
 
-    def analyze_auto_captures(self) -> dict:
+    def analyze_auto_captures(self, since: str | None = None) -> dict:
         """Scan auto-captures and return project/tool/extension statistics.
 
         Reads all ``*auto-captures*.jsonl`` files under
         ``01-raw/code-changes/`` and aggregates counts by project,
         file extension, and tool used.
+
+        Args:
+            since: ISO timestamp — only read files whose mtime >= this value,
+                   and additionally filter individual records by their
+                   ``timestamp`` field if present.
 
         Returns:
             dict with keys: total_captures, projects (Counter),
@@ -416,10 +449,26 @@ class DatalakeAnalyzer:
                 "tools": tools,
             }
 
+        since_ts = datetime.fromisoformat(since).timestamp() if since else None
+        since_dt = datetime.fromisoformat(since) if since else None
+
         for jsonl_file in sorted(ac_dir.glob("*auto-captures*.jsonl")):
+            if since_ts is not None:
+                file_mtime = os.path.getmtime(jsonl_file)
+                if file_mtime < since_ts:
+                    continue
             records = self._read_jsonl(jsonl_file)
-            total_captures += len(records)
             for record in records:
+                # Filter individual records by timestamp field
+                if since_dt is not None:
+                    record_ts = record.get("timestamp")
+                    if record_ts:
+                        try:
+                            if datetime.fromisoformat(record_ts) < since_dt:
+                                continue
+                        except (ValueError, TypeError):
+                            pass
+                total_captures += 1
                 project = record.get("project")
                 if project:
                     projects[project] += 1
@@ -699,6 +748,191 @@ class ProfileBuilder:
             patterns.append("Build AI agents and RAG pipelines")
 
         return patterns
+
+    # --- SPRInG incremental build methods ---
+
+    def build_incremental(self, output_path: Path) -> PersonalProfile:
+        """Incremental build: analyze only new entries, merge with EMA."""
+        existing = load_profile(output_path)
+
+        # Fall back to full build if no prior build
+        if existing.last_build_timestamp is None:
+            logger.info("incremental_fallback_full", reason="no_prior_build")
+            profile = self.build(output_path=output_path)
+            profile.last_build_timestamp = datetime.now().isoformat()
+            profile.build_mode = "full"
+            save_profile(profile, output_path)
+            return profile
+
+        # Analyze only new entries
+        analyzer = DatalakeAnalyzer(self.datalake_path)
+        tp_data = analyzer.analyze_training_pairs(since=existing.last_build_timestamp)
+        ac_data = analyzer.analyze_auto_captures(since=existing.last_build_timestamp)
+
+        new_entries = tp_data["total_pairs"] + ac_data["total_captures"]
+        if new_entries == 0:
+            logger.info("incremental_no_new_entries")
+            return existing
+
+        # Build incremental profile from new data
+        categories = tp_data["categories"]
+        incremental_topics = self._compute_topic_weights(categories)
+        incremental_task_types = self._detect_task_types(categories)
+        incremental_patterns = self._detect_patterns(ac_data, tp_data, existing.domain)
+
+        # Detect drift
+        drift_detected, distance, topics_drifted = self._detect_drift(
+            existing.top_topics, incremental_topics
+        )
+
+        # Merge with EMA
+        alpha = ALPHA_DRIFT if drift_detected else ALPHA_NORMAL
+        merged_topics = self._merge_topic_weights(existing.top_topics, incremental_topics, alpha)
+
+        # Merge other fields
+        merged_patterns = list(existing.patterns)
+        for p in incremental_patterns:
+            if p not in merged_patterns:
+                merged_patterns.append(p)
+
+        merged_task_types = list(existing.task_types_detected)
+        for tt in incremental_task_types:
+            if tt not in merged_task_types:
+                merged_task_types.append(tt)
+
+        # Build replay buffer
+        replay_buffer = self._compute_replay_buffer(tp_data, existing.top_topics)
+
+        # Build drift history entry
+        drift_history = list(existing.drift_history)
+        if drift_detected:
+            drift_history.append(
+                {
+                    "date": datetime.now().strftime("%Y-%m-%d"),
+                    "topics_drifted": topics_drifted,
+                    "magnitude": round(distance, 4),
+                }
+            )
+
+        profile = PersonalProfile(
+            domain=existing.domain,
+            domain_confidence=existing.domain_confidence,
+            top_topics=merged_topics,
+            style=existing.style,
+            patterns=merged_patterns,
+            task_types_detected=merged_task_types[:10],
+            total_entries=existing.total_entries + new_entries,
+            last_build_timestamp=datetime.now().isoformat(),
+            build_mode="incremental",
+            drift_history=drift_history,
+            replay_buffer=replay_buffer,
+        )
+
+        save_profile(profile, output_path)
+        logger.info(
+            "incremental_build_done",
+            new_entries=new_entries,
+            drift_detected=drift_detected,
+            drift_distance=round(distance, 4),
+            alpha=alpha,
+        )
+        return profile
+
+    def _detect_drift(
+        self,
+        existing_topics: list[TopicWeight],
+        new_topics: list[TopicWeight],
+    ) -> tuple[bool, float, list[str]]:
+        """Detect drift via cosine distance between topic distributions."""
+        if not existing_topics or not new_topics:
+            return (False, 0.0, [])
+
+        # Build aligned weight vectors
+        all_topics: set[str] = set()
+        for tw in existing_topics:
+            all_topics.add(tw.topic)
+        for tw in new_topics:
+            all_topics.add(tw.topic)
+
+        existing_map = {tw.topic: tw.weight for tw in existing_topics}
+        new_map = {tw.topic: tw.weight for tw in new_topics}
+
+        sorted_topics = sorted(all_topics)
+        vec_a = [existing_map.get(t, 0.0) for t in sorted_topics]
+        vec_b = [new_map.get(t, 0.0) for t in sorted_topics]
+
+        # Cosine distance
+        dot_product = sum(a * b for a, b in zip(vec_a, vec_b))
+        norm_a = sum(a * a for a in vec_a) ** 0.5
+        norm_b = sum(b * b for b in vec_b) ** 0.5
+
+        if norm_a == 0 or norm_b == 0:
+            return (False, 0.0, [])
+
+        cosine_sim = dot_product / (norm_a * norm_b)
+        distance = 1.0 - cosine_sim
+
+        # Find topics that drifted significantly
+        topics_drifted = []
+        for topic in all_topics:
+            diff = abs(new_map.get(topic, 0.0) - existing_map.get(topic, 0.0))
+            if diff > 0.1:
+                topics_drifted.append(topic)
+
+        drift_detected = distance > DRIFT_THRESHOLD
+        return (drift_detected, distance, sorted(topics_drifted))
+
+    def _merge_topic_weights(
+        self,
+        existing: list[TopicWeight],
+        new: list[TopicWeight],
+        alpha: float,
+    ) -> list[TopicWeight]:
+        """EMA merge of topic weights: merged = alpha * new + (1-alpha) * existing."""
+        existing_map = {tw.topic: tw.weight for tw in existing}
+        new_map = {tw.topic: tw.weight for tw in new}
+
+        all_topics = set(existing_map.keys()) | set(new_map.keys())
+        merged: dict[str, float] = {}
+        for topic in all_topics:
+            old_w = existing_map.get(topic, 0.0)
+            new_w = new_map.get(topic, 0.0)
+            merged[topic] = alpha * new_w + (1 - alpha) * old_w
+
+        # Sort by weight, keep top 10, re-normalize
+        sorted_topics = sorted(merged.items(), key=lambda x: x[1], reverse=True)[:10]
+        total = sum(w for _, w in sorted_topics)
+        if total > 0:
+            sorted_topics = [(t, w / total) for t, w in sorted_topics]
+
+        return [TopicWeight(topic=t, weight=round(w, 4)) for t, w in sorted_topics]
+
+    def _compute_replay_buffer(
+        self,
+        tp_data: dict,
+        existing_topics: list[TopicWeight],
+        max_size: int = REPLAY_BUFFER_SIZE,
+    ) -> list[dict]:
+        """Keep top-N most informative new entries by novelty score."""
+        known_topics = {tw.topic for tw in existing_topics}
+
+        # Score entries from training pairs by novelty
+        scored: list[dict] = []
+        categories = tp_data.get("categories", {})
+        for cat, count in categories.items():
+            novelty = 1.0 if cat not in known_topics else 0.0
+            scored.append(
+                {
+                    "category": cat,
+                    "count": count,
+                    "novelty_score": novelty,
+                    "timestamp": datetime.now().isoformat(),
+                }
+            )
+
+        # Sort by novelty then count
+        scored.sort(key=lambda x: (x["novelty_score"], x["count"]), reverse=True)
+        return scored[:max_size]
 
 
 # Simple cache to avoid re-reading profile on every LLM call

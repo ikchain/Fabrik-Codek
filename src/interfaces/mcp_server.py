@@ -100,11 +100,12 @@ async def lifespan(server: FastMCP):
     try:
         from src.core.competence_model import get_active_competence_map
         from src.core.personal_profile import get_active_profile
-        from src.core.task_router import TaskRouter
+        from src.core.task_router import TaskRouter, load_learned_classifier
 
         profile = get_active_profile()
         competence_map = get_active_competence_map()
-        _state["router"] = TaskRouter(competence_map, profile, settings)
+        learned = load_learned_classifier(settings)
+        _state["router"] = TaskRouter(competence_map, profile, settings, learned_classifier=learned)
     except Exception as exc:
         logger.warning("mcp_router_init_failed", error=str(exc))
         _state["router"] = None

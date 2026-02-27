@@ -64,11 +64,17 @@ def chat(
             # Route via TaskRouter for adaptive system prompt
             from src.core.competence_model import get_active_competence_map
             from src.core.personal_profile import get_active_profile
-            from src.core.task_router import TaskRouter
+            from src.core.task_router import TaskRouter, load_learned_classifier
 
             active_profile = get_active_profile()
             competence_map = get_active_competence_map()
-            router = TaskRouter(competence_map, active_profile, settings)
+            from src.core.strategy_optimizer import MABStrategyOptimizer
+
+            mab = MABStrategyOptimizer(settings.data_dir)
+            learned = load_learned_classifier(settings)
+            router = TaskRouter(
+                competence_map, active_profile, settings, mab=mab, learned_classifier=learned
+            )
 
             from src.flywheel.collector import bridge_outcome_to_feedback
             from src.flywheel.outcome_tracker import OutcomeTracker
@@ -145,8 +151,20 @@ def chat(
                     except Exception:
                         pass  # Non-critical: never crash chat for feedback
 
+                # Update MAB with outcome feedback (FC-42)
+                if prev_outcome is not None and prev_outcome.outcome != "neutral":
+                    arm_id = prev_outcome.strategy.get("arm_id")
+                    if arm_id:
+                        mab.update(
+                            task_type=prev_outcome.task_type,
+                            topic=prev_outcome.topic,
+                            arm_id=arm_id,
+                            reward=1.0 if prev_outcome.outcome == "accepted" else 0.0,
+                        )
+
                 last_record_id = record.id
 
+        mab.save_state()
         tracker.close_session()
         stats = tracker.get_session_stats()
         if stats["total"] > 0:
@@ -189,11 +207,17 @@ def ask(
         from src.config import settings
         from src.core.competence_model import get_active_competence_map
         from src.core.personal_profile import get_active_profile
-        from src.core.task_router import TaskRouter
+        from src.core.task_router import TaskRouter, load_learned_classifier
 
         active_profile = get_active_profile()
         competence_map = get_active_competence_map()
-        router = TaskRouter(competence_map, active_profile, settings)
+        from src.core.strategy_optimizer import MABStrategyOptimizer
+
+        mab = MABStrategyOptimizer(settings.data_dir)
+        learned = load_learned_classifier(settings)
+        router = TaskRouter(
+            competence_map, active_profile, settings, mab=mab, learned_classifier=learned
+        )
         decision = await router.route(prompt)
 
         console.print(
@@ -290,6 +314,7 @@ Responde usando el contexto cuando sea relevante."""
                 latency_ms=response.latency_ms,
             )
             ot.close_session()
+            mab.save_state()
 
     async_run(run())
 
@@ -1439,7 +1464,7 @@ def fulltext(
 
 @app.command()
 def profile(
-    action: str = typer.Argument("show", help="Action: show, build"),
+    action: str = typer.Argument("show", help="Action: show, build, build-incremental, drift"),
 ):
     """Manage your personal profile — learned from the datalake."""
     from src.config import settings
@@ -1501,8 +1526,71 @@ def profile(
 
         console.print("\n[dim]System prompt preview:[/dim]")
         console.print(f"[italic]{loaded.to_system_prompt()}[/italic]")
+    elif action == "build-incremental":
+        console.print(Panel.fit("[bold]Incremental Profile Build...[/bold]"))
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True,
+        ) as progress:
+            progress.add_task("Analyzing new entries...", total=None)
+            builder = ProfileBuilder(datalake_path=settings.datalake_path)
+            result = builder.build_incremental(output_path=profile_path)
+
+        if result.build_mode == "incremental":
+            table = Table(title="Incremental Build")
+            table.add_column("Field", style="bold cyan")
+            table.add_column("Value", style="green")
+            table.add_row("Total Entries", str(result.total_entries))
+            table.add_row("Build Mode", result.build_mode)
+            table.add_row("Topics", ", ".join(t.topic for t in result.top_topics[:5]))
+            table.add_row("Drift History", str(len(result.drift_history)) + " events")
+            if result.drift_history:
+                latest = result.drift_history[-1]
+                table.add_row(
+                    "Latest Drift",
+                    f"{latest['date']}: {', '.join(latest['topics_drifted'])} "
+                    f"(mag: {latest['magnitude']})",
+                )
+            table.add_row("Saved To", str(profile_path))
+            console.print(table)
+        else:
+            console.print("[yellow]No prior build found. Performed full build.[/yellow]")
+            table = Table(title="Profile Built (Full)")
+            table.add_column("Field", style="bold cyan")
+            table.add_column("Value", style="green")
+            table.add_row("Domain", f"{result.domain} ({result.domain_confidence:.0%})")
+            table.add_row("Topics", ", ".join(t.topic for t in result.top_topics[:5]))
+            table.add_row("Total Entries", str(result.total_entries))
+            table.add_row("Saved To", str(profile_path))
+            console.print(table)
+
+    elif action == "drift":
+        loaded = load_profile(profile_path)
+
+        if not loaded.drift_history:
+            console.print(
+                "[yellow]No drift history yet. Run:[/yellow] fabrik profile build-incremental"
+            )
+            return
+
+        table = Table(title="Profile Drift History")
+        table.add_column("Date", style="cyan")
+        table.add_column("Topics Drifted", style="yellow")
+        table.add_column("Magnitude", style="red")
+
+        for entry in loaded.drift_history:
+            table.add_row(
+                entry.get("date", "?"),
+                ", ".join(entry.get("topics_drifted", [])),
+                f"{entry.get('magnitude', 0):.4f}",
+            )
+        console.print(table)
+
     else:
-        console.print("[yellow]Usage:[/yellow] fabrik profile [show|build]")
+        console.print("[yellow]Usage:[/yellow] fabrik profile [show|build|build-incremental|drift]")
 
 
 @app.command()
@@ -1571,15 +1659,33 @@ def competence(
         console.print(f"\n[dim]Saved to: {competence_path}[/dim]")
 
         # Generate strategy overrides from outcome data
-        from src.core.strategy_optimizer import StrategyOptimizer
+        from src.core.strategy_optimizer import MABStrategyOptimizer
 
-        optimizer = StrategyOptimizer(settings.datalake_path)
+        mab = MABStrategyOptimizer(settings.data_dir)
         overrides_path = settings.data_dir / "profile" / "strategy_overrides.json"
-        override_count = optimizer.save_overrides(overrides_path)
+        override_count = mab.save_overrides(overrides_path)
         if override_count > 0:
-            console.print(f"[bold]Strategy overrides:[/bold] {override_count} generated")
+            console.print(f"[bold]Strategy overrides:[/bold] {override_count} generated (MAB)")
         else:
-            console.print("[dim]No strategy overrides needed (all acceptance rates OK)[/dim]")
+            console.print("[dim]No strategy overrides needed (MAB defaults are fine)[/dim]")
+
+        # Build learned classifier corpus from outcomes (FC-47)
+        from src.core.task_router import LearnedClassifier
+
+        corpus_path = settings.data_dir / "profile" / "router_corpus.json"
+        learned = LearnedClassifier(corpus_path)
+        corpus_size = learned.build_corpus(settings.datalake_path)
+        if corpus_size > 0:
+            fitted = learned.fit()
+            if fitted:
+                console.print(f"[bold]Learned classifier:[/bold] {corpus_size} entries, fitted")
+            else:
+                console.print(
+                    f"[dim]Learned classifier: {corpus_size} entries "
+                    f"(need {LearnedClassifier.MIN_CORPUS_SIZE} to activate)[/dim]"
+                )
+        else:
+            console.print("[dim]Learned classifier: no accepted outcomes yet[/dim]")
 
     elif action == "show":
         loaded = load_competence_map(competence_path)
@@ -1762,11 +1868,13 @@ def router(
     from src.config import settings
     from src.core.competence_model import get_active_competence_map
     from src.core.personal_profile import get_active_profile
-    from src.core.task_router import TaskRouter
+    from src.core.task_router import TaskRouter, load_learned_classifier
 
     active_profile = get_active_profile()
     competence_map = get_active_competence_map()
-    task_router = TaskRouter(competence_map, active_profile, settings)
+    learned = load_learned_classifier(settings)
+
+    task_router = TaskRouter(competence_map, active_profile, settings, learned_classifier=learned)
 
     async def run():
         decision = await task_router.route(query)

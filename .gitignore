@@ -65,3 +65,7 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Runtime data (outcomes, profiles, MAB state)
+data/01-raw/
+data/profile/
