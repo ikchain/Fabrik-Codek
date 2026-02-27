@@ -62,6 +62,10 @@ htmlcov/
 .pytest_cache/
 .tox/
 
+# arXiv preprint (internal only)
+docs/plans/2026-02-27-arxiv-preprint-structure.md
+docs/plans/2026-02-27-arxiv-preprint-structure.docx
+
 # OS
 .DS_Store
 Thumbs.db
