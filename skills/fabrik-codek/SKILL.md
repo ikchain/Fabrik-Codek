@@ -1,7 +1,7 @@
 ---
 name: fabrik-codek
-description: "Personal cognitive architecture that learns how you work. Builds a knowledge graph from your sessions, profiles your expertise, adapts retrieval per task, and self-corrects via outcome feedback. Three-tier hybrid RAG (vector + graph + full-text). 100% local with any Ollama model."
-version: 1.7.1
+description: "Personal cognitive architecture that learns how you work. Builds a knowledge graph from your sessions, profiles your expertise, adapts retrieval per task, and self-corrects via outcome feedback. Three-tier hybrid RAG (vector + graph + full-text). Runs locally with any Ollama model — no outbound network calls from Fabrik-Codek itself."
+version: 1.8.0
 homepage: https://github.com/ikchain/Fabrik-Codek
 user-invocable: true
 metadata:
@@ -13,14 +13,10 @@ metadata:
     os: [macos, linux]
     emoji: "🧠"
     configPaths:
-      - "~/.claude/projects/*"
       - "./data/embeddings/"
       - "./data/graphdb/"
       - "./data/profile/"
-    install:
-      - kind: pip
-        package: fabrik-codek
-        bins: [fabrik]
+      - "./data/01-raw/outcomes/"
 ---
 
 # Fabrik-Codek
@@ -39,7 +35,7 @@ Fabrik-Codek is a **personal cognitive architecture** that runs locally with any
 6. **Outcome tracking** — Infers whether responses were useful from conversational patterns (zero friction, no manual feedback)
 7. **Self-correction** — Adjusts retrieval parameters for underperforming task/topic combinations
 
-Every interaction feeds back into the system. No data leaves your machine at any point.
+Every interaction feeds back into the system. Fabrik-Codek itself makes zero outbound network requests — it only connects to Ollama and optionally Meilisearch on localhost. Model downloads are handled by Ollama's own CLI (`ollama pull`), not by Fabrik-Codek.
 
 ## Setup
 
@@ -167,7 +163,7 @@ Strategy Optimizer ← Outcome Tracker ← LLM responds with context
 - [Ollama](https://ollama.ai/) running locally with any model (e.g., `ollama pull qwen2.5-coder:7b`)
 - Optional: [Meilisearch](https://meilisearch.com/) for full-text search (system works without it)
 
-**Note on installation**: Fabrik-Codek is installed directly from the [GitHub repository](https://github.com/ikchain/Fabrik-Codek), not from PyPI. This lets you audit the source code before installing. The `pip install` metadata in this skill declares the package name for dependency resolution, but the actual install is from the cloned repo.
+**Note on installation**: Fabrik-Codek is an **instruction-only skill** — there is no automated installer. You install it manually from the [GitHub repository](https://github.com/ikchain/Fabrik-Codek) via `git clone` + `pip install -e ".[dev]"`. This lets you audit the full source code before installing. The skill itself contains documentation and MCP server configuration, not executable code.
 
 ## Security & Privacy
 
@@ -175,10 +171,10 @@ Strategy Optimizer ← Outcome Tracker ← LLM responds with context
 
 Fabrik-Codek makes **zero outbound network requests**. It connects only to services running on your own machine:
 
-- **Ollama** at `localhost:11434` — your locally running LLM server
+- **Ollama** at `localhost:11434` — your locally running LLM server (for inference and embeddings)
 - **Meilisearch** at `localhost:7700` (optional) — your locally running search engine
 
-No telemetry, no analytics, no phone-home. Verify in the source: `grep -r "requests\.\|httpx\.\|urllib" src/` returns zero hits on outbound calls.
+No telemetry, no analytics, no phone-home. Verify in the source: `grep -r "requests\.\|httpx\.\|urllib" src/` — all HTTP calls target `localhost` only. The only network activity that occurs during setup is `ollama pull`, which is Ollama's own CLI downloading models from [ollama.ai/library](https://ollama.ai/library) — Fabrik-Codek does not initiate or control these downloads.
 
 ### What `fabrik init` does
 
@@ -194,12 +190,12 @@ Fabrik-Codek does not download any files from any server. Model downloads are ha
 
 ### Data access scope
 
-**Reads** (all local, all opt-in):
+**Reads** (all local, all opt-in, never automatic):
 
-| Path | What | When |
-|------|------|------|
-| `~/.claude/projects/*/` | Session transcript JSONL files (already on disk from Claude Code) | Only when you run `fabrik learn process` or `fabrik graph build --include-transcripts` |
-| `./data/` or `FABRIK_DATALAKE_PATH` | Your datalake (training pairs, captures, metadata) | During `graph build`, `rag index`, `profile build`, `competence build` |
+| Path | What | When | Why |
+|------|------|------|-----|
+| `~/.claude/projects/*/` | Session transcript JSONL files (already on disk from Claude Code) | **Only** when you explicitly run `fabrik learn process` or `fabrik graph build --include-transcripts` | Extracts entities and reasoning patterns to build the knowledge graph. This path is NOT in `configPaths` because Fabrik-Codek does not write to it — it is read-only and user-initiated. |
+| `./data/` or `FABRIK_DATALAKE_PATH` | Your datalake (training pairs, captures, metadata) | During `graph build`, `rag index`, `profile build`, `competence build` | Source data for building the knowledge base and personal profile |
 
 **Writes** (all local):
 
