@@ -492,12 +492,11 @@ def get_model(
 ) -> str:
     """Select model based on competence level.
 
-    Expert/Competent use the default (smaller) model.
-    Novice/Unknown/empty escalate to the fallback (larger) model.
+    Always returns default_model. Escalation to fallback disabled
+    because the fine-tuned 7B outperforms the base 14B on benchmarks
+    (personalization paradox fix).
     """
-    if competence_level in ("Expert", "Competent"):
-        return default_model
-    return fallback_model
+    return default_model
 
 
 # ---------------------------------------------------------------------------

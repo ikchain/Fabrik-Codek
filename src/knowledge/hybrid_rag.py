@@ -14,12 +14,17 @@ from src.knowledge.rag import RAGEngine
 logger = structlog.get_logger()
 
 # Default RRF parameters
-DEFAULT_VECTOR_WEIGHT = 0.6
-DEFAULT_GRAPH_WEIGHT = 0.4
+DEFAULT_VECTOR_WEIGHT = 0.75
+DEFAULT_GRAPH_WEIGHT = 0.25
 DEFAULT_FULLTEXT_WEIGHT = 0.0
 DEFAULT_RRF_K = 60
 DEFAULT_GRAPH_DEPTH = 2
-DEFAULT_MIN_WEIGHT = 0.3
+DEFAULT_MIN_WEIGHT = 0.5
+
+# Relevance gate parameters
+MAX_NEIGHBORS_PER_SEED = 3
+MAX_EXPANSION_QUERIES = 5
+ENTITY_MATCH_RATIO = 0.8
 
 
 class HybridRAGEngine:
@@ -62,7 +67,7 @@ class HybridRAGEngine:
     async def retrieve(
         self,
         query: str,
-        limit: int = 5,
+        limit: int = 3,
         graph_depth: int = DEFAULT_GRAPH_DEPTH,
         min_weight: float = DEFAULT_MIN_WEIGHT,
         confidence_threshold: float | None = None,
@@ -141,13 +146,15 @@ class HybridRAGEngine:
         self,
         seed_ids: list[str],
         depth: int = 2,
-        min_weight: float = 0.3,
+        min_weight: float = DEFAULT_MIN_WEIGHT,
     ) -> list[tuple[str, float]]:
         """Build composite expansion queries from seed + neighbor entity pairs.
 
-        For each seed entity, gets its graph neighbors and builds
-        "{seed_name} {neighbor_name}" pairs. Deduplicates symmetric pairs
-        (A,B) == (B,A) and sorts by graph proximity score (highest first).
+        For each seed entity, gets its graph neighbors (capped at
+        MAX_NEIGHBORS_PER_SEED) and builds "{seed_name} {neighbor_name}"
+        pairs. Deduplicates symmetric pairs (A,B) == (B,A), sorts by
+        graph proximity score (highest first), and caps total queries
+        at MAX_EXPANSION_QUERIES.
 
         Returns:
             List of (expansion_query, score) tuples.
@@ -161,6 +168,7 @@ class HybridRAGEngine:
                 continue
 
             neighbors = self._graph.get_neighbors(seed_id, depth=depth, min_weight=min_weight)
+            neighbors = neighbors[:MAX_NEIGHBORS_PER_SEED]
             for neighbor_entity, score in neighbors:
                 pair_key = frozenset({seed_entity.name, neighbor_entity.name})
                 if pair_key not in seen_pairs:
@@ -170,7 +178,7 @@ class HybridRAGEngine:
 
         # Sort by proximity score (highest first)
         expansion_queries.sort(key=lambda x: x[1], reverse=True)
-        return expansion_queries
+        return expansion_queries[:MAX_EXPANSION_QUERIES]
 
     async def _graph_retrieve(
         self,
@@ -222,7 +230,14 @@ class HybridRAGEngine:
         return results[:limit]
 
     def _recognize_entities(self, query: str) -> list[str]:
-        """Recognize known entities in the query text."""
+        """Recognize known entities in the query text.
+
+        Uses word-overlap ratio >= ENTITY_MATCH_RATIO to filter
+        partial substring matches that inject noise.
+        """
+        if not self._graph:
+            return []
+
         entity_ids = []
         query_lower = query.lower()
 
@@ -239,7 +254,14 @@ class HybridRAGEngine:
             entities = self._graph.search_entities(candidate, limit=1)
             if entities:
                 entity = entities[0]
-                if entity.name in candidate or candidate in entity.name:
+                # Word-overlap ratio instead of loose substring match
+                entity_words = set(re.findall(r"\w+", entity.name.lower()))
+                candidate_words = set(re.findall(r"\w+", candidate.lower()))
+                if not entity_words:
+                    continue
+                overlap = len(entity_words & candidate_words)
+                ratio = overlap / len(entity_words)
+                if ratio >= ENTITY_MATCH_RATIO:
                     if entity.id not in entity_ids:
                         entity_ids.append(entity.id)
 
@@ -312,7 +334,7 @@ class HybridRAGEngine:
     async def query_with_context(
         self,
         query: str,
-        limit: int = 5,
+        limit: int = 3,
         graph_depth: int = DEFAULT_GRAPH_DEPTH,
     ) -> str:
         """Get query with injected hybrid RAG context."""
@@ -325,7 +347,7 @@ class HybridRAGEngine:
         context_parts = []
         for r in results:
             origin = r.get("origin", "unknown")
-            context_parts.append(f"[{r['category']}|{origin}] {r['text'][:500]}")
+            context_parts.append(f"[{r['category']}|{origin}] {r['text'][:300]}")
 
         # Add graph relationship paths if available
         graph_paths = results[0].get("graph_context", []) if results else []

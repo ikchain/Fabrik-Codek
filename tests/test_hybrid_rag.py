@@ -252,6 +252,37 @@ class TestEntityRecognition:
         ids = hybrid._recognize_entities("hello world")
         assert len(ids) == 0
 
+    def test_rejects_partial_substring_match(self, graph_engine, mock_rag_engine):
+        """Short tokens that partially match an entity name are rejected."""
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag_engine,
+            graph_engine=graph_engine,
+        )
+        # "retry" is a substring of "retry with backoff" but word ratio 1/3 = 0.33 < 0.8
+        ids = hybrid._recognize_entities("retry the operation")
+        entity_names = {graph_engine.get_entity(eid).name for eid in ids}
+        assert "retry with backoff" not in entity_names
+
+    def test_accepts_exact_entity_match(self, graph_engine, mock_rag_engine):
+        """Exact entity name in query is accepted."""
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag_engine,
+            graph_engine=graph_engine,
+        )
+        ids = hybrid._recognize_entities("hexagonal architecture patterns")
+        entity_names = {graph_engine.get_entity(eid).name for eid in ids}
+        assert "hexagonal architecture" in entity_names
+
+    def test_accepts_single_word_entity(self, graph_engine, mock_rag_engine):
+        """Single-word entity matched exactly is accepted (ratio 1/1 = 1.0)."""
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag_engine,
+            graph_engine=graph_engine,
+        )
+        ids = hybrid._recognize_entities("Use pydantic for validation")
+        entity_names = {graph_engine.get_entity(eid).name for eid in ids}
+        assert "pydantic" in entity_names
+
 
 # --- Full Retrieval Tests ---
 
@@ -742,6 +773,34 @@ class TestGraphGuidedExpansion:
         results = await hybrid._graph_retrieve("something unknown", limit=10)
         assert results == []
 
+    def test_expansion_queries_capped_at_max(self, graph_engine, mock_rag_engine):
+        """Expansion queries are limited to MAX_EXPANSION_QUERIES."""
+        from src.knowledge.hybrid_rag import MAX_EXPANSION_QUERIES
+
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag_engine,
+            graph_engine=graph_engine,
+        )
+        entity_ids = hybrid._recognize_entities("FastAPI with Pydantic")
+        queries = hybrid._build_expansion_queries(entity_ids, depth=2)
+        assert len(queries) <= MAX_EXPANSION_QUERIES
+
+    def test_neighbors_per_seed_capped(self, graph_engine, mock_rag_engine):
+        """Each seed expands at most MAX_NEIGHBORS_PER_SEED neighbors."""
+        from src.knowledge.hybrid_rag import MAX_NEIGHBORS_PER_SEED
+
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag_engine,
+            graph_engine=graph_engine,
+        )
+        entity_ids = hybrid._recognize_entities("How to use FastAPI?")
+        assert len(entity_ids) > 0
+
+        queries = hybrid._build_expansion_queries(entity_ids, depth=2)
+        seed_entity = graph_engine.get_entity(entity_ids[0])
+        seed_queries = [q for q, _ in queries if seed_entity.name in q]
+        assert len(seed_queries) <= MAX_NEIGHBORS_PER_SEED
+
     @pytest.mark.asyncio
     async def test_graph_retrieve_integration(self, graph_engine):
         """Full retrieve() pipeline with expansion queries works end-to-end."""
@@ -855,3 +914,102 @@ class TestHybridAdaptiveRetrieval:
         # Regular retrieve should have been called
         assert mock_rag.retrieve.call_count >= 1
         assert len(results) >= 0
+
+
+# --- Relevance Gate Integration Tests ---
+
+
+class TestRelevanceGate:
+    """Verify relevance gate reduces noise in graph expansion."""
+
+    def test_default_weights_are_updated(self):
+        """Constants reflect relevance gate values."""
+        from src.knowledge.hybrid_rag import (
+            DEFAULT_GRAPH_WEIGHT,
+            DEFAULT_MIN_WEIGHT,
+            DEFAULT_VECTOR_WEIGHT,
+            ENTITY_MATCH_RATIO,
+            MAX_EXPANSION_QUERIES,
+            MAX_NEIGHBORS_PER_SEED,
+        )
+
+        assert DEFAULT_VECTOR_WEIGHT == 0.75
+        assert DEFAULT_GRAPH_WEIGHT == 0.25
+        assert DEFAULT_MIN_WEIGHT == 0.5
+        assert MAX_NEIGHBORS_PER_SEED == 3
+        assert MAX_EXPANSION_QUERIES == 5
+        assert ENTITY_MATCH_RATIO == 0.8
+
+    @pytest.mark.asyncio
+    async def test_generic_query_skips_graph(self, graph_engine, mock_rag_engine):
+        """Generic queries with no exact entity matches produce no graph results."""
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag_engine,
+            graph_engine=graph_engine,
+        )
+        graph_results = await hybrid._graph_retrieve("how to write clean code", limit=10)
+        assert graph_results == []
+
+    @pytest.mark.asyncio
+    async def test_domain_query_gets_capped_graph(self, graph_engine):
+        """Domain queries produce graph results capped at budget."""
+        from src.knowledge.hybrid_rag import MAX_EXPANSION_QUERIES
+
+        call_count = 0
+
+        async def counting_retrieve(query, limit=5):
+            nonlocal call_count
+            call_count += 1
+            return [
+                {
+                    "text": f"result for {query} #{call_count}",
+                    "source": "file1",
+                    "category": "api",
+                    "score": 0.9,
+                },
+            ]
+
+        rag = MagicMock()
+        rag.retrieve = AsyncMock(side_effect=counting_retrieve)
+
+        hybrid = HybridRAGEngine(
+            rag_engine=rag,
+            graph_engine=graph_engine,
+        )
+        results = await hybrid._graph_retrieve("How to use FastAPI?", limit=20)
+
+        # Expansion queries + seed fallback, but expansion capped at MAX_EXPANSION_QUERIES
+        entity_ids = hybrid._recognize_entities("How to use FastAPI?")
+        max_calls = MAX_EXPANSION_QUERIES + len(entity_ids)  # expansion + seed fallback
+        assert call_count <= max_calls
+
+    def test_high_min_weight_filters_weak_edges(self, tmp_dir, mock_rag_engine):
+        """Edges with weight < 0.5 are filtered by the new default."""
+        engine = GraphEngine(data_dir=tmp_dir / "graphdb")
+
+        # Add entity with a weak edge
+        engine.ingest_triple(
+            Triple(
+                subject_name="React",
+                subject_type=EntityType.TECHNOLOGY,
+                relation_type=RelationType.USES,
+                object_name="Webpack",
+                object_type=EntityType.TECHNOLOGY,
+                source_doc="doc1",
+            )
+        )
+
+        # Manually set edge weight below threshold
+        for u, v, data in engine._graph.edges(data=True):
+            data["weight"] = 0.4  # Below DEFAULT_MIN_WEIGHT=0.5
+
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag_engine,
+            graph_engine=engine,
+        )
+
+        entity_ids = hybrid._recognize_entities("React components")
+        if entity_ids:
+            queries = hybrid._build_expansion_queries(entity_ids)
+            # No expansion queries because all edges are below min_weight
+            assert queries == []

@@ -249,6 +249,8 @@ class TestStrategySelection:
 
 
 class TestEscalationLogic:
+    """Escalation disabled. All levels use default_model."""
+
     def test_expert_uses_default_model(self):
         model = get_model("Expert", "qwen2.5-coder:14b", "qwen2.5-coder:32b")
         assert model == "qwen2.5-coder:14b"
@@ -257,22 +259,25 @@ class TestEscalationLogic:
         model = get_model("Competent", "qwen2.5-coder:14b", "qwen2.5-coder:32b")
         assert model == "qwen2.5-coder:14b"
 
-    def test_novice_escalates_to_fallback(self):
+    def test_novice_uses_default_model(self):
+        """Novice no longer escalates to fallback."""
         model = get_model("Novice", "qwen2.5-coder:14b", "qwen2.5-coder:32b")
-        assert model == "qwen2.5-coder:32b"
+        assert model == "qwen2.5-coder:14b"
 
-    def test_unknown_escalates_to_fallback(self):
+    def test_unknown_uses_default_model(self):
+        """Unknown no longer escalates to fallback."""
         model = get_model("Unknown", "qwen2.5-coder:14b", "qwen2.5-coder:32b")
-        assert model == "qwen2.5-coder:32b"
+        assert model == "qwen2.5-coder:14b"
 
-    def test_empty_level_escalates(self):
+    def test_empty_level_uses_default(self):
+        """Empty level no longer escalates to fallback."""
         model = get_model("", "default", "fallback")
-        assert model == "fallback"
+        assert model == "default"
 
-    def test_expert_topic_none_uses_default(self):
-        # When no topic detected, competence_level defaults to "Unknown"
+    def test_no_topic_uses_default(self):
+        """No topic detected still uses default model."""
         model = get_model("Unknown", "default", "fallback")
-        assert model == "fallback"
+        assert model == "default"
 
     def test_custom_models(self):
         model = get_model("Expert", "llama3", "gpt-4")
@@ -447,19 +452,21 @@ class TestTaskRouterIntegration:
         assert decision.model == "qwen2.5-coder:14b"
         assert decision.classification_method == "keyword"
 
-    def test_route_unknown_topic_escalates(self):
+    def test_route_unknown_topic_uses_default(self):
+        """Unknown topic no longer escalates to fallback."""
         router = self._make_router()
         decision = asyncio.run(router.route("deploy kubernetes cluster"))
         assert decision.topic == "kubernetes"
         assert decision.competence_level == "Unknown"
-        assert decision.model == "qwen2.5-coder:32b"
+        assert decision.model == "qwen2.5-coder:14b"
 
-    def test_route_no_topic_escalates(self):
+    def test_route_no_topic_uses_default(self):
+        """No topic no longer escalates to fallback."""
         router = self._make_router()
         decision = asyncio.run(router.route("fix this random error"))
         assert decision.topic is None
         assert decision.competence_level == "Unknown"
-        assert decision.model == "qwen2.5-coder:32b"
+        assert decision.model == "qwen2.5-coder:14b"
 
     def test_route_system_prompt_has_three_layers(self):
         router = self._make_router()
