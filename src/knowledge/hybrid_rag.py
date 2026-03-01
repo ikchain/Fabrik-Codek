@@ -26,6 +26,74 @@ MAX_NEIGHBORS_PER_SEED = 3
 MAX_EXPANSION_QUERIES = 5
 ENTITY_MATCH_RATIO = 0.8
 
+# Post-retrieval relevance filter
+DEFAULT_RELEVANCE_THRESHOLD = 0.12
+_STOPWORDS = frozenset(
+    {
+        "el",
+        "la",
+        "los",
+        "las",
+        "un",
+        "una",
+        "de",
+        "del",
+        "en",
+        "con",
+        "por",
+        "para",
+        "que",
+        "es",
+        "son",
+        "este",
+        "esta",
+        "estos",
+        "estas",
+        "como",
+        "qué",
+        "cómo",
+        "por",
+        "más",
+        "este",
+        "código",
+        "code",
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "this",
+        "that",
+        "how",
+        "what",
+        "why",
+        "and",
+        "or",
+        "to",
+        "of",
+        "in",
+        "for",
+        "with",
+        "it",
+        "do",
+        "does",
+        "has",
+        "have",
+        "not",
+        "no",
+        "si",
+        "se",
+        "su",
+        "al",
+        "lo",
+        "le",
+        "y",
+        "o",
+        "hay",
+        "tiene",
+    }
+)
+
 
 class HybridRAGEngine:
     """Hybrid retrieval engine composing RAGEngine (vector), GraphEngine (graph),
@@ -64,6 +132,30 @@ class HybridRAGEngine:
         if self._owns_rag and self._rag:
             await self._rag.close()
 
+    @staticmethod
+    def _compute_relevance(query: str, text: str) -> float:
+        """Compute token-overlap relevance between query and retrieved text.
+
+        Uses Jaccard-like overlap on meaningful tokens (stopwords removed).
+        Returns a score in [0.0, 1.0] where 0 = no overlap, 1 = perfect.
+        """
+
+        def _tokenize(s: str) -> set[str]:
+            tokens = set(re.findall(r"\b\w{2,}\b", s.lower()))
+            return tokens - _STOPWORDS
+
+        query_tokens = _tokenize(query)
+        if not query_tokens:
+            return 1.0  # Cannot evaluate — let it pass
+
+        text_tokens = _tokenize(text[:500])  # Cap text length for speed
+        if not text_tokens:
+            return 0.0
+
+        overlap = len(query_tokens & text_tokens)
+        # Asymmetric: what fraction of query tokens appear in the text
+        return overlap / len(query_tokens)
+
     async def retrieve(
         self,
         query: str,
@@ -74,6 +166,7 @@ class HybridRAGEngine:
         min_k: int | None = None,
         max_k: int | None = None,
         query_entities: list[str] | None = None,
+        min_relevance: float | None = None,
     ) -> list[dict]:
         """Hybrid retrieval using RRF fusion of vector, graph, and fulltext results.
 
@@ -86,6 +179,9 @@ class HybridRAGEngine:
             min_k: Minimum results for adaptive retrieval.
             max_k: Maximum results for adaptive retrieval.
             query_entities: Entity names for confidence entity coverage.
+            min_relevance: Minimum query-text token overlap to keep a result.
+                If None, uses DEFAULT_RELEVANCE_THRESHOLD.
+                Set to 0.0 to disable filtering.
 
         Returns:
             List of dicts with keys: text, source, category, score, origin.
@@ -124,7 +220,33 @@ class HybridRAGEngine:
         # 4. RRF fusion (three sources)
         fused = self._rrf_fusion(vector_results, graph_results, fulltext_results, limit=limit)
 
-        # 5. Enrich with graph context paths
+        # 5. Post-retrieval relevance filter
+        threshold = min_relevance if min_relevance is not None else DEFAULT_RELEVANCE_THRESHOLD
+        if threshold > 0 and fused:
+            pre_count = len(fused)
+            filtered = []
+            for result in fused:
+                relevance = self._compute_relevance(query, result.get("text", ""))
+                result["relevance"] = round(relevance, 3)
+                if relevance >= threshold:
+                    filtered.append(result)
+                else:
+                    logger.debug(
+                        "relevance_filter_dropped",
+                        relevance=round(relevance, 3),
+                        threshold=threshold,
+                        text_preview=result.get("text", "")[:80],
+                    )
+            fused = filtered
+            if pre_count > len(fused):
+                logger.info(
+                    "relevance_filter_applied",
+                    before=pre_count,
+                    after=len(fused),
+                    dropped=pre_count - len(fused),
+                )
+
+        # 6. Enrich with graph context paths
         entity_ids = self._recognize_entities(query)
         if entity_ids:
             context_paths = self._graph.get_context_paths(entity_ids, max_paths=3)

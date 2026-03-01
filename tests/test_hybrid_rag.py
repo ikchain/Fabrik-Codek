@@ -317,7 +317,9 @@ class TestHybridRetrieval:
             rag_engine=mock_rag_engine,
             graph_engine=graph_engine,
         )
-        results = await hybrid.retrieve("something totally unrelated xyz", limit=5)
+        results = await hybrid.retrieve(
+            "something totally unrelated xyz", limit=5, min_relevance=0.0
+        )
         # Should fall back to vector-only results
         assert len(results) > 0
 
@@ -367,7 +369,7 @@ class TestEdgeCases:
             rag_engine=mock_rag_engine,
             graph_engine=empty_graph,
         )
-        results = await hybrid.retrieve("test query", limit=3)
+        results = await hybrid.retrieve("test query", limit=3, min_relevance=0.0)
         assert len(results) > 0
 
     def test_rrf_empty_inputs(self, graph_engine, mock_rag_engine):
@@ -558,7 +560,7 @@ class TestHybridRetrieveWithFullText:
             fulltext_weight=0.3,
         )
 
-        results = await engine.retrieve("test query", limit=5)
+        results = await engine.retrieve("test query", limit=5, min_relevance=0.0)
         assert len(results) >= 1
         mock_fulltext.search.assert_called_once()
 
@@ -577,7 +579,7 @@ class TestHybridRetrieveWithFullText:
             graph_engine=graph_engine,
         )
 
-        results = await engine.retrieve("test query", limit=5)
+        results = await engine.retrieve("test query", limit=5, min_relevance=0.0)
         assert len(results) >= 1
 
     @pytest.mark.asyncio
@@ -600,7 +602,7 @@ class TestHybridRetrieveWithFullText:
             fulltext_weight=0.3,
         )
 
-        results = await engine.retrieve("test query", limit=5)
+        results = await engine.retrieve("test query", limit=5, min_relevance=0.0)
         assert len(results) >= 1
 
 
@@ -1013,3 +1015,274 @@ class TestRelevanceGate:
             queries = hybrid._build_expansion_queries(entity_ids)
             # No expansion queries because all edges are below min_weight
             assert queries == []
+
+
+# --- Post-Retrieval Relevance Filter Tests ---
+
+
+class TestComputeRelevance:
+    """Unit tests for _compute_relevance static method."""
+
+    def test_exact_overlap(self):
+        """Query tokens all present in text -> 1.0."""
+        score = HybridRAGEngine._compute_relevance(
+            "FastAPI Pydantic validation",
+            "FastAPI uses Pydantic for data validation and serialization",
+        )
+        assert score == 1.0
+
+    def test_partial_overlap(self):
+        """Some query tokens in text -> fraction."""
+        score = HybridRAGEngine._compute_relevance(
+            "FastAPI Pydantic validation",
+            "FastAPI is a web framework built on Starlette",
+        )
+        # "fastapi" matches, "pydantic" and "validation" don't -> 1/3
+        assert 0.3 <= score <= 0.4
+
+    def test_no_overlap(self):
+        """No query tokens in text -> 0.0."""
+        score = HybridRAGEngine._compute_relevance(
+            "docker compose networking",
+            "Unrelated project configuration for appointment system",
+        )
+        assert score == 0.0
+
+    def test_empty_query(self):
+        """Empty query -> 1.0 (let it pass)."""
+        score = HybridRAGEngine._compute_relevance("", "some text here")
+        assert score == 1.0
+
+    def test_stopword_only_query(self):
+        """Query with only stopwords -> 1.0 (no meaningful tokens)."""
+        score = HybridRAGEngine._compute_relevance("the is a", "some text")
+        assert score == 1.0
+
+    def test_empty_text(self):
+        """Empty text -> 0.0."""
+        score = HybridRAGEngine._compute_relevance("docker compose", "")
+        assert score == 0.0
+
+    def test_stopwords_filtered(self):
+        """Stopwords don't count as overlap."""
+        score = HybridRAGEngine._compute_relevance(
+            "how to use FastAPI",
+            "FastAPI is great for building APIs",
+        )
+        assert score > 0.0
+
+    def test_case_insensitive(self):
+        """Matching is case-insensitive."""
+        score = HybridRAGEngine._compute_relevance(
+            "FASTAPI pydantic",
+            "fastapi and Pydantic work together",
+        )
+        assert score == 1.0
+
+    def test_text_capped_at_500_chars(self):
+        """Only first 500 chars of text are tokenized."""
+        long_text = "x " * 1000 + "docker compose networking"
+        score = HybridRAGEngine._compute_relevance(
+            "docker compose networking",
+            long_text,
+        )
+        assert score == 0.0
+
+    def test_bilingual_stopwords(self):
+        """Both Spanish and English stopwords are filtered."""
+        score = HybridRAGEngine._compute_relevance(
+            "qué es terraform",
+            "terraform modules provide infrastructure as code",
+        )
+        assert score == 1.0
+
+    def test_short_tokens_ignored(self):
+        """Tokens with < 2 chars are ignored by regex."""
+        score = HybridRAGEngine._compute_relevance(
+            "a b c docker",
+            "docker container management",
+        )
+        assert score == 1.0
+
+
+class TestRelevanceFilter:
+    """Integration tests for the post-retrieval relevance filter in retrieve()."""
+
+    @pytest.mark.asyncio
+    async def test_filter_drops_irrelevant_results(self, graph_engine):
+        """Results with no token overlap are dropped."""
+        mock_rag = MagicMock()
+        mock_rag.retrieve = AsyncMock(
+            return_value=[
+                {
+                    "text": "docker compose networking and container orchestration",
+                    "source": "relevant",
+                    "category": "devops",
+                    "score": 0.9,
+                },
+                {
+                    "text": "Unrelated appointment scheduling system configuration",
+                    "source": "irrelevant",
+                    "category": "medical",
+                    "score": 0.8,
+                },
+            ]
+        )
+
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag,
+            graph_engine=graph_engine,
+        )
+        results = await hybrid.retrieve("docker compose networking", limit=5)
+
+        texts = [r["text"] for r in results]
+        assert any("docker" in t.lower() for t in texts)
+        assert not any("Unrelated" in t for t in texts)
+
+    @pytest.mark.asyncio
+    async def test_filter_keeps_relevant_results(self, graph_engine):
+        """Results with good token overlap pass the filter."""
+        mock_rag = MagicMock()
+        mock_rag.retrieve = AsyncMock(
+            return_value=[
+                {
+                    "text": "FastAPI framework uses Pydantic for data validation",
+                    "source": "f1",
+                    "category": "api",
+                    "score": 0.9,
+                },
+            ]
+        )
+
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag,
+            graph_engine=graph_engine,
+        )
+        results = await hybrid.retrieve("FastAPI Pydantic validation", limit=5)
+
+        assert len(results) >= 1
+        assert any("FastAPI" in r["text"] for r in results)
+
+    @pytest.mark.asyncio
+    async def test_filter_adds_relevance_score(self, graph_engine):
+        """Each result gets a 'relevance' field."""
+        mock_rag = MagicMock()
+        mock_rag.retrieve = AsyncMock(
+            return_value=[
+                {
+                    "text": "FastAPI web framework for Python APIs",
+                    "source": "f1",
+                    "category": "api",
+                    "score": 0.9,
+                },
+            ]
+        )
+
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag,
+            graph_engine=graph_engine,
+        )
+        results = await hybrid.retrieve("FastAPI Python", limit=5)
+
+        for r in results:
+            assert "relevance" in r
+            assert 0.0 <= r["relevance"] <= 1.0
+
+    @pytest.mark.asyncio
+    async def test_filter_disabled_with_zero_threshold(self, graph_engine):
+        """Setting min_relevance=0.0 disables the filter."""
+        mock_rag = MagicMock()
+        mock_rag.retrieve = AsyncMock(
+            return_value=[
+                {
+                    "text": "completely unrelated appointment system",
+                    "source": "f1",
+                    "category": "medical",
+                    "score": 0.9,
+                },
+            ]
+        )
+
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag,
+            graph_engine=graph_engine,
+        )
+        results = await hybrid.retrieve("docker compose networking", limit=5, min_relevance=0.0)
+
+        assert len(results) >= 1
+
+    @pytest.mark.asyncio
+    async def test_filter_custom_threshold(self, graph_engine):
+        """Custom min_relevance overrides the default."""
+        mock_rag = MagicMock()
+        mock_rag.retrieve = AsyncMock(
+            return_value=[
+                {
+                    "text": "FastAPI web framework overview with Starlette",
+                    "source": "f1",
+                    "category": "api",
+                    "score": 0.9,
+                },
+            ]
+        )
+
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag,
+            graph_engine=graph_engine,
+        )
+
+        results_strict = await hybrid.retrieve(
+            "FastAPI Pydantic validation serialization",
+            limit=5,
+            min_relevance=0.9,
+        )
+        results_permissive = await hybrid.retrieve(
+            "FastAPI Pydantic validation serialization",
+            limit=5,
+            min_relevance=0.1,
+        )
+
+        assert len(results_strict) <= len(results_permissive)
+
+    @pytest.mark.asyncio
+    async def test_filter_preserves_result_order(self, graph_engine):
+        """Filtered results maintain their RRF score ordering."""
+        mock_rag = MagicMock()
+        mock_rag.retrieve = AsyncMock(
+            return_value=[
+                {
+                    "text": "terraform modules for AWS infrastructure provisioning",
+                    "source": "f1",
+                    "category": "devops",
+                    "score": 0.95,
+                },
+                {
+                    "text": "terraform state management and remote backends",
+                    "source": "f2",
+                    "category": "devops",
+                    "score": 0.85,
+                },
+                {
+                    "text": "completely unrelated inventory software system",
+                    "source": "f3",
+                    "category": "medical",
+                    "score": 0.80,
+                },
+            ]
+        )
+
+        hybrid = HybridRAGEngine(
+            rag_engine=mock_rag,
+            graph_engine=graph_engine,
+        )
+        results = await hybrid.retrieve("terraform infrastructure AWS", limit=5)
+
+        if len(results) >= 2:
+            assert results[0]["score"] >= results[1]["score"]
+
+    @pytest.mark.asyncio
+    async def test_default_threshold_from_constant(self):
+        """Default threshold matches DEFAULT_RELEVANCE_THRESHOLD constant."""
+        from src.knowledge.hybrid_rag import DEFAULT_RELEVANCE_THRESHOLD
+
+        assert DEFAULT_RELEVANCE_THRESHOLD == 0.12

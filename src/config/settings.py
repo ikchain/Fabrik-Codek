@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     meilisearch_index: str = "fabrik_knowledge"
     fulltext_weight: float = 0.0  # 0.0 = disabled in RRF fusion
 
+    # Context Gate
+    context_gate_enabled: bool = True
+
+    # Relevance filter — minimum query-text token overlap to keep RAG results
+    relevance_threshold: float = 0.12
+
     # Logging
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "console"
