@@ -1,7 +1,7 @@
 ---
 name: fabrik-codek
 description: "Personal cognitive architecture that learns how you work. Builds a knowledge graph from your sessions, profiles your expertise, adapts retrieval per task, and self-corrects via outcome feedback. Three-tier hybrid RAG (vector + graph + full-text). Runs locally with any Ollama model — no outbound network calls from Fabrik-Codek itself."
-version: 1.8.0
+version: 1.10.0
 homepage: https://github.com/ikchain/Fabrik-Codek
 user-invocable: true
 metadata:
@@ -156,6 +156,8 @@ Strategy Optimizer ← Outcome Tracker ← LLM responds with context
 - **Strategy Optimizer** adjusts retrieval parameters for weak spots
 - **Graph Temporal Decay** fades stale knowledge, reinforces recent activity
 - **Semantic Drift Detection** alerts when an entity's context shifts between graph builds
+- **Context Gate** decides whether to inject RAG context at all (skips for generic queries where context would be noise)
+- **Relevance Filter** drops retrieved chunks with low query-text token overlap, preventing domain-specific knowledge from contaminating generic answers
 
 ## Requirements
 
