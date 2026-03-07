@@ -127,11 +127,13 @@ class RAGEngine:
     )
     async def _get_embedding(self, text: str) -> list[float]:
         """Get embedding from Ollama."""
+        # nomic-embed-text context = 8192 tokens; ~2 chars/token avg → cap at 4000 chars
+        truncated = text[:4000] if len(text) > 4000 else text
         response = await self._http_client.post(
             f"{self.ollama_host}/api/embeddings",
             json={
                 "model": self.embedding_model,
-                "prompt": text,
+                "prompt": truncated,
             },
         )
         response.raise_for_status()
@@ -230,6 +232,8 @@ class RAGEngine:
             for line in f:
                 try:
                     data = json.loads(line)
+                    if not isinstance(data, dict):
+                        continue
                     text = data.get(text_field, "")
                     if not text or len(text) < 50:
                         continue
@@ -330,6 +334,14 @@ class RAGEngine:
                     stats["files_indexed"] += 1
                 except (OSError, httpx.HTTPError, json.JSONDecodeError, RetryError):
                     stats["errors"] += 1
+
+        # Compact fragmented files to prevent "Not found" errors on search
+        if stats["chunks_created"] > 0:
+            try:
+                self._table.compact_files()
+                self._table.cleanup_old_versions()
+            except Exception:
+                pass  # pylance not installed or table too small
 
         return stats
 
