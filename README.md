@@ -509,7 +509,7 @@ python scripts/run_eval_benchmark.py --compare "qwen2.5-coder:7b,qwen2.5-coder:1
 
 ## Acknowledgments
 
-Several features in Fabrik-Codek were inspired by **[Savia](https://github.com/gonzalezpazmonica/pm-workspace)** by [Monica González Paz](https://github.com/gonzalezpazmonica) — a cognitive context engineering system that implements synaptic protocols, spreading activation, and chunking-based memory. Specifically:
+Three features in Fabrik-Codek were inspired by **[Savia](https://github.com/gonzalezpazmonica/pm-workspace)** by [Monica González Paz](https://github.com/gonzalezpazmonica) — a cognitive context engineering system that implements synaptic protocols, spreading activation, and chunking-based memory:
 
 - **Context Map** — deterministic routing bypass for predictable queries, adapted from Savia's context engineering patterns
 - **Instincts Protocol** — emergent behavioral patterns with confidence decay, inspired by Savia's synaptic learning approach
