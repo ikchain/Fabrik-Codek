@@ -4,7 +4,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests: 1057](https://img.shields.io/badge/tests-1057%20passing-brightgreen.svg)]()
+[![Tests: 1058](https://img.shields.io/badge/tests-1058%20passing-brightgreen.svg)]()
 
 > A 7B model that knows you is worth more than a 400B that doesn't.
 
@@ -16,7 +16,7 @@ It's not just RAG. It's a closed feedback loop: capture your work, extract knowl
 
 ```bash
 git clone https://github.com/ikchain/Fabrik-Codek.git
-cd fabrik-codek
+cd Fabrik-Codek
 pip install -e ".[dev]"
 fabrik init
 ```
@@ -43,6 +43,7 @@ Most local AI tools are stateless wrappers around an LLM. Fabrik-Codek is **stat
 | **Routes tasks intelligently** | Adaptive Task Router classifies queries, selects the right model, and adapts retrieval strategy per task type |
 | **Observes outcomes** | Outcome Tracker infers response quality from conversational patterns — zero friction, no thumbs up/down |
 | **Self-corrects** | Strategy Optimizer adjusts retrieval parameters for underperforming topic/task combinations |
+| **Filters noise** | Context Gate prevents RAG contamination on simple queries; Relevance Filter drops irrelevant chunks post-retrieval |
 | **Keeps knowledge fresh** | Graph Temporal Decay fades stale knowledge; Semantic Drift Detection alerts when contexts shift |
 | **Domain-agnostic** | Works for any profession. A lawyer's datalake produces a legal profile. A trader's datalake produces a trading profile |
 
@@ -62,6 +63,8 @@ graph TB
         Competence[Competence Model]
         Strategy[Strategy Optimizer]
         Outcome[Outcome Tracker]
+        Gate[Context Gate]
+        Instincts[Instincts Protocol]
     end
 
     subgraph "Knowledge Layer"
@@ -84,7 +87,9 @@ graph TB
     Router --> Profile
     Router --> Competence
     Router --> Strategy
-    Router -->|3-layer prompt| Hybrid
+    Router --> Gate
+    Gate -->|3-layer prompt| Hybrid
+    Instincts -->|behavioral hints| Router
 
     Hybrid --> RAG
     Hybrid --> Graph
@@ -131,6 +136,7 @@ Every interaction feeds back into the system. The more you use it, the better it
 - **Graph Temporal Decay** — `weight = base * 0.5^(days/half_life)` keeps knowledge fresh
 - **Semantic Drift Detection** — Jaccard similarity on neighbor sets between builds; alerts when an entity's context shifts
 - **Graph Completion** — Infers transitive relationships to densify the graph
+- **Post-Retrieval Relevance Filter** — Token-overlap filter drops irrelevant RAG chunks after fusion. Asymmetric Jaccard on meaningful tokens (bilingual stopwords removed), configurable threshold
 - **Full-Text Search** — Optional Meilisearch for BM25-style keyword search; degrades gracefully when unavailable
 
 ### Personalization
@@ -163,7 +169,7 @@ Every interaction feeds back into the system. The more you use it, the better it
 
 ## Hyper-Personalization Engine
 
-The five components that make Fabrik-Codek personal:
+The core components that make Fabrik-Codek personal:
 
 ### Personal Profile
 
@@ -332,6 +338,8 @@ The `graph build` command runs an 11-step pipeline:
 | Command | Description |
 |---------|-------------|
 | `fabrik profile build` | Build personal profile from datalake |
+| `fabrik profile build-incremental` | Incremental update (only new entries) |
+| `fabrik profile drift` | View topic drift history |
 | `fabrik profile show` | View current profile |
 | `fabrik competence build` | Build competence map |
 | `fabrik competence show` | View competence scores per topic |
@@ -461,13 +469,14 @@ All settings via environment variables (`FABRIK_` prefix) or `.env` file.
 fabrik-codek/
 ├── src/
 │   ├── config/             # Settings (Pydantic BaseSettings)
-│   ├── core/               # LLM client, Profile, Competence, Router, Optimizer
+│   ├── core/               # LLM client, Profile, Competence, Router, Optimizer,
+│   │                       # Context Gate, Context Map, Instincts
 │   ├── interfaces/         # CLI (Typer) + API (FastAPI) + MCP (FastMCP)
 │   ├── knowledge/          # RAG, Graph, Hybrid RAG, Full-Text
 │   │   └── extraction/     # Heuristic, LLM, Transcript extractors + Pipeline
 │   ├── flywheel/           # Collector, Session Observer, Outcome Tracker
 │   └── tools/              # Code analysis tools
-├── tests/                  # 1057 tests
+├── tests/                  # 1058 tests
 ├── scripts/                # Setup, benchmarks, enrichment
 ├── data/                   # Local data storage
 ├── prompts/                # Prompt templates
