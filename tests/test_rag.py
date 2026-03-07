@@ -1212,7 +1212,7 @@ class TestRetrieve:
                 results = await engine.retrieve("test")
                 assert len(results) == 1
                 result = results[0]
-                assert set(result.keys()) == {"text", "source", "category", "score"}
+                assert set(result.keys()) == {"text", "source", "category", "score", "created_at"}
                 assert result["text"] == "sample"
                 assert result["source"] == "path/to/file"
                 assert result["category"] == "docs"

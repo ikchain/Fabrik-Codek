@@ -221,6 +221,7 @@ class RetrievalStrategy:
     confidence_threshold: float = 0.7
     min_k: int = 1
     max_k: int = 8
+    max_tokens: int = 1024
 
 
 @dataclass
@@ -234,7 +235,8 @@ class RoutingDecision:
     strategy: RetrievalStrategy
     system_prompt: str
     classification_method: str  # "learned", "keyword", or "llm"
-    arm_id: str | None = None  # MAB arm ID (FC-42), None if no MAB
+    arm_id: str | None = None  # MAB arm ID, None if no MAB
+    gate_decision: Any = None  # Context Gate decision
 
 
 # ---------------------------------------------------------------------------
@@ -394,6 +396,7 @@ TASK_STRATEGIES: dict[str, dict] = {
         "confidence_threshold": 0.6,
         "min_k": 2,
         "max_k": 8,
+        "max_tokens": 1536,
     },
     "code_review": {
         "graph_depth": 1,
@@ -402,6 +405,7 @@ TASK_STRATEGIES: dict[str, dict] = {
         "confidence_threshold": 0.7,
         "min_k": 1,
         "max_k": 5,
+        "max_tokens": 1024,
     },
     "architecture": {
         "graph_depth": 3,
@@ -410,6 +414,7 @@ TASK_STRATEGIES: dict[str, dict] = {
         "confidence_threshold": 0.5,
         "min_k": 2,
         "max_k": 8,
+        "max_tokens": 1536,
     },
     "explanation": {
         "graph_depth": 2,
@@ -418,6 +423,7 @@ TASK_STRATEGIES: dict[str, dict] = {
         "confidence_threshold": 0.8,
         "min_k": 1,
         "max_k": 4,
+        "max_tokens": 1024,
     },
     "testing": {
         "graph_depth": 2,
@@ -426,6 +432,7 @@ TASK_STRATEGIES: dict[str, dict] = {
         "confidence_threshold": 0.7,
         "min_k": 1,
         "max_k": 5,
+        "max_tokens": 1024,
     },
     "devops": {
         "graph_depth": 1,
@@ -434,6 +441,7 @@ TASK_STRATEGIES: dict[str, dict] = {
         "confidence_threshold": 0.6,
         "min_k": 1,
         "max_k": 6,
+        "max_tokens": 1024,
     },
     "ml_engineering": {
         "graph_depth": 2,
@@ -442,6 +450,7 @@ TASK_STRATEGIES: dict[str, dict] = {
         "confidence_threshold": 0.6,
         "min_k": 2,
         "max_k": 8,
+        "max_tokens": 1536,
     },
     "general": {
         "graph_depth": 2,
@@ -450,6 +459,7 @@ TASK_STRATEGIES: dict[str, dict] = {
         "confidence_threshold": 0.7,
         "min_k": 1,
         "max_k": 5,
+        "max_tokens": 768,
     },
 }
 
@@ -462,6 +472,19 @@ TASK_INSTRUCTIONS: dict[str, str] = {
     "devops": "Be precise with commands and configs. Warn about destructive ops.",
     "ml_engineering": "Reference specific techniques. Distinguish theory from practice.",
     "general": "",
+}
+
+# Profile fragment map per task type.
+# Load only relevant profile fragments instead of the full profile.
+TASK_PROFILE_FRAGMENTS: dict[str, list[str]] = {
+    "debugging": ["identity", "tech_stack", "patterns"],
+    "code_review": ["identity", "tech_stack", "patterns"],
+    "architecture": ["identity", "tech_stack", "patterns", "projects"],
+    "explanation": ["identity", "tech_stack"],
+    "testing": ["identity", "tech_stack"],
+    "devops": ["identity", "tech_stack"],
+    "ml_engineering": ["identity", "tech_stack", "patterns"],
+    "general": ["identity"],
 }
 
 _DEFAULT_STRATEGY = TASK_STRATEGIES["general"]
@@ -477,6 +500,7 @@ def get_strategy(task_type: str) -> RetrievalStrategy:
         confidence_threshold=params.get("confidence_threshold", 0.7),
         min_k=params.get("min_k", 1),
         max_k=params.get("max_k", 8),
+        max_tokens=params.get("max_tokens", 1024),
     )
 
 
@@ -508,24 +532,49 @@ def build_system_prompt(
     profile: PersonalProfile,
     competence_map: CompetenceMap,
     task_type: str,
+    profile_fragments: list[str] | None = None,
 ) -> str:
-    """Build a 3-layer system prompt: profile + competence + task instruction."""
+    """Build a U-Shape system prompt: task + profile + competence.
+
+    Liu et al. (2024) "Lost in the Middle" shows LLMs attend best to
+    the beginning and end of context. We place:
+      - Beginning (high attention): task instruction (what to do)
+      - Middle (lower attention): profile identity (who the user is)
+      - End (high attention): competence level (constraints/expertise)
+
+    When *profile_fragments* is provided (from ContextMap),
+    only those fragments are loaded instead of the full profile.
+    When *profile_fragments* is None, uses TASK_PROFILE_FRAGMENTS
+    to select fragments by task type.
+    """
     parts: list[str] = []
 
-    # Layer 1: Personal profile
-    profile_prompt = profile.to_system_prompt()
-    if profile_prompt:
-        parts.append(profile_prompt)
-
-    # Layer 2: Competence fragment
-    competence_fragment = competence_map.to_system_prompt_fragment()
-    if competence_fragment:
-        parts.append(competence_fragment)
-
-    # Layer 3: Task-specific instruction
+    # Beginning: Task-specific instruction (high attention)
     instruction = TASK_INSTRUCTIONS.get(task_type, "")
     if instruction:
         parts.append(f"Task: {task_type}. {instruction}")
+
+    # Middle: Personal profile (lower attention — supportive context)
+    # Resolve fragments: explicit > task-type map > fallback to identity
+    effective_fragments = profile_fragments
+    if effective_fragments is None:
+        effective_fragments = TASK_PROFILE_FRAGMENTS.get(task_type)
+
+    if effective_fragments is not None:
+        for frag_name in effective_fragments:
+            frag = profile.to_fragment(frag_name)
+            if frag:
+                parts.append(frag)
+    else:
+        # Ultimate fallback: full profile
+        profile_prompt = profile.to_system_prompt()
+        if profile_prompt:
+            parts.append(profile_prompt)
+
+    # End: Competence fragment (high attention — expertise constraints)
+    competence_fragment = competence_map.to_system_prompt_fragment()
+    if competence_fragment:
+        parts.append(competence_fragment)
 
     return " ".join(parts)
 
@@ -629,6 +678,7 @@ class TaskRouter:
         self.default_model: str = getattr(settings, "default_model", "")
         self.fallback_model: str = getattr(settings, "fallback_model", "")
         self._strategy_overrides: dict = self._load_overrides(settings)
+        self._evolved_strategies: dict = self._load_evolved_strategies(settings)
         self._mab = mab
         self._learned = learned_classifier
 
@@ -644,6 +694,22 @@ class TaskRouter:
         try:
             with open(override_path, encoding="utf-8") as f:
                 return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+    @staticmethod
+    def _load_evolved_strategies(settings: Any) -> dict:
+        """Load evolved strategies from data/profile/evolved_strategies.json."""
+        data_dir = getattr(settings, "data_dir", None)
+        if data_dir is None:
+            return {}
+        evolved_path = Path(data_dir) / "profile" / "evolved_strategies.json"
+        if not evolved_path.exists():
+            return {}
+        try:
+            with open(evolved_path, encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("strategies", {})
         except (json.JSONDecodeError, OSError):
             return {}
 
@@ -696,12 +762,29 @@ class TaskRouter:
         arm_id: str | None = None
 
         if self._mab is not None:
-            # MAB Thompson Sampling (FC-42)
+            # MAB Thompson Sampling — highest priority
             arm_id, strategy = self._mab.select_arm(task_type, topic)
         else:
             strategy = get_strategy(task_type)
 
-            # Apply static strategy override if available (FC-38 fallback)
+            # Apply evolved strategies if available
+            evolved = self._evolved_strategies.get(task_type)
+            if evolved:
+                strategy = RetrievalStrategy(
+                    use_rag=strategy.use_rag,
+                    use_graph=strategy.use_graph,
+                    graph_depth=int(evolved.get("graph_depth", strategy.graph_depth)),
+                    vector_weight=evolved.get("vector_weight", strategy.vector_weight),
+                    graph_weight=evolved.get("graph_weight", strategy.graph_weight),
+                    fulltext_weight=evolved.get("fulltext_weight", strategy.fulltext_weight),
+                    confidence_threshold=evolved.get(
+                        "confidence_threshold", strategy.confidence_threshold
+                    ),
+                    min_k=int(evolved.get("min_k", strategy.min_k)),
+                    max_k=int(evolved.get("max_k", strategy.max_k)),
+                )
+
+            # Apply static strategy override if available (fallback)
             override_key = f"{task_type}_{topic}" if topic else task_type
             override = self._strategy_overrides.get(override_key)
             if override:

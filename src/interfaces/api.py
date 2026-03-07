@@ -356,16 +356,75 @@ async def ask(req: AskRequest, request: Request):
     state = request.app.state
     await _ensure_ollama(state)
 
-    # Route the query
-    router = getattr(state, "router", None)
-    decision = await router.route(req.prompt) if router else None
+    # Context-Map determinista — check before full pipeline
+    from src.core.context_map import ContextMap
+
+    context_map_result = None
+    if settings.context_map_enabled:
+        cmap_path = settings.data_dir / "profile" / "context_map.json"
+        cmap = ContextMap.from_file(cmap_path)
+        context_map_result = cmap.match(req.prompt)
+
+    decision = None
+    inject_context = True
+
+    if context_map_result is not None:
+        from src.core.context_gate import GateDecision
+        from src.core.task_router import (
+            RoutingDecision,
+            build_system_prompt,
+            get_strategy,
+        )
+
+        entry = context_map_result.entry
+        profile = getattr(state, "profile", None)
+        comp_map = getattr(state, "competence_map", None)
+
+        if profile and comp_map:
+            sys_prompt = build_system_prompt(
+                profile,
+                comp_map,
+                entry.task_type,
+                profile_fragments=entry.profile_fragments,
+            )
+        else:
+            sys_prompt = ""
+
+        decision = RoutingDecision(
+            task_type=entry.task_type,
+            topic=None,
+            competence_level="Mapped",
+            model=req.model or settings.default_model,
+            strategy=get_strategy(entry.task_type),
+            system_prompt=sys_prompt,
+            classification_method="context_map",
+        )
+        decision.gate_decision = GateDecision(
+            inject=entry.use_context,
+            reason="context_map",
+            confidence=1.0,
+        )
+        inject_context = entry.use_context
+    else:
+        # Full pipeline: Router + Context Gate
+        router = getattr(state, "router", None)
+        decision = await router.route(req.prompt) if router else None
+
+        if decision:
+            from src.core.context_gate import ContextGate
+
+            gate = ContextGate(enabled=settings.context_gate_enabled)
+            gate_decision = gate.evaluate(req.prompt, decision)
+            decision.gate_decision = gate_decision
+            inject_context = gate_decision.inject
+
     graph_depth = decision.strategy.graph_depth if decision else req.graph_depth
 
     prompt = req.prompt
     sources: list[dict] = []
 
     # Hybrid RAG (vector + graph)
-    if req.use_graph and getattr(state, "hybrid", None):
+    if req.use_graph and getattr(state, "hybrid", None) and inject_context:
         results = await state.hybrid.retrieve(
             req.prompt,
             limit=5,
@@ -389,7 +448,7 @@ async def ask(req: AskRequest, request: Request):
             ]
 
     # Vector RAG only
-    elif req.use_rag and getattr(state, "rag", None):
+    elif req.use_rag and getattr(state, "rag", None) and inject_context:
         rag_results = await state.rag.retrieve(req.prompt, limit=5)
         if rag_results:
             context = "\n---\n".join(f"[{r['category']}] {r['text'][:500]}" for r in rag_results)
@@ -406,6 +465,7 @@ async def ask(req: AskRequest, request: Request):
         prompt,
         model=decision.model if decision else req.model,
         system=decision.system_prompt if decision else None,
+        max_tokens=decision.strategy.max_tokens if decision else None,
     )
 
     return AskResponse(

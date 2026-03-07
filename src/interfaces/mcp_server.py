@@ -289,16 +289,76 @@ async def fabrik_ask(
     if not ollama_ok:
         return json.dumps({"error": "Ollama is not available"})
 
-    # Route the query
-    router = _state.get("router")
-    decision = await router.route(prompt) if router else None
+    # Context-Map determinista — check before full pipeline
+    from src.config import settings
+    from src.core.context_map import ContextMap
+
+    context_map_result = None
+    if settings.context_map_enabled:
+        cmap_path = settings.data_dir / "profile" / "context_map.json"
+        cmap = ContextMap.from_file(cmap_path)
+        context_map_result = cmap.match(prompt)
+
+    decision = None
+    inject_context = True
+
+    if context_map_result is not None:
+        from src.core.context_gate import GateDecision
+        from src.core.task_router import (
+            RoutingDecision,
+            build_system_prompt,
+            get_strategy,
+        )
+
+        entry = context_map_result.entry
+        profile = _state.get("profile")
+        comp_map = _state.get("competence_map")
+
+        if profile and comp_map:
+            sys_prompt = build_system_prompt(
+                profile,
+                comp_map,
+                entry.task_type,
+                profile_fragments=entry.profile_fragments,
+            )
+        else:
+            sys_prompt = ""
+
+        decision = RoutingDecision(
+            task_type=entry.task_type,
+            topic=None,
+            competence_level="Mapped",
+            model=model,
+            strategy=get_strategy(entry.task_type),
+            system_prompt=sys_prompt,
+            classification_method="context_map",
+        )
+        decision.gate_decision = GateDecision(
+            inject=entry.use_context,
+            reason="context_map",
+            confidence=1.0,
+        )
+        inject_context = entry.use_context
+    else:
+        # Full pipeline: Router + Context Gate
+        router = _state.get("router")
+        decision = await router.route(prompt) if router else None
+
+        if decision:
+            from src.core.context_gate import ContextGate
+
+            gate = ContextGate(enabled=settings.context_gate_enabled)
+            gate_decision = gate.evaluate(prompt, decision)
+            decision.gate_decision = gate_decision
+            inject_context = gate_decision.inject
+
     effective_depth = decision.strategy.graph_depth if decision else graph_depth
 
     effective_prompt = prompt
     sources: list[dict] = []
 
     # Hybrid RAG (vector + graph)
-    if use_graph and _state.get("hybrid"):
+    if use_graph and _state.get("hybrid") and inject_context:
         try:
             results = await _state["hybrid"].retrieve(
                 prompt,
@@ -325,7 +385,7 @@ async def fabrik_ask(
             logger.warning("mcp_hybrid_retrieve_failed", error=str(exc))
 
     # Vector RAG only
-    elif use_rag and _state.get("rag"):
+    elif use_rag and _state.get("rag") and inject_context:
         try:
             rag_results = await _state["rag"].retrieve(prompt, limit=5)
             if rag_results:
@@ -351,6 +411,7 @@ async def fabrik_ask(
             effective_prompt,
             model=decision.model if decision else model,
             system=decision.system_prompt if decision else None,
+            max_tokens=decision.strategy.max_tokens if decision else None,
         )
     except Exception as exc:
         return json.dumps({"error": f"LLM generation failed: {exc}"})
@@ -417,6 +478,59 @@ async def fabrik_graph_stats() -> str:
             "relation_types": stats["relation_types"],
         }
     )
+
+
+@mcp.tool(
+    name="fabrik_ask_agent",
+    description=(
+        "Machine-to-machine variant of fabrik_ask. Returns structured JSON with "
+        "status codes (OK, ERROR, WARNING, NO_CONTEXT) and separated fields for "
+        "easy programmatic consumption by other agents or pipelines."
+    ),
+)
+async def fabrik_ask_agent(
+    prompt: str,
+    model: str | None = None,
+    use_rag: bool = False,
+    use_graph: bool = False,
+    graph_depth: int = 2,
+) -> str:
+    """Ask a question with structured agent-friendly output."""
+    # Delegate to fabrik_ask for the core logic
+    raw = await fabrik_ask(
+        prompt=prompt,
+        model=model,
+        use_rag=use_rag,
+        use_graph=use_graph,
+        graph_depth=graph_depth,
+    )
+    data = json.loads(raw)
+
+    # Build agent envelope
+    if "error" in data:
+        envelope = {
+            "status": "ERROR",
+            "error": data["error"],
+            "answer": None,
+            "metadata": {},
+        }
+    else:
+        has_sources = bool(data.get("sources"))
+        envelope = {
+            "status": "OK" if has_sources else "NO_CONTEXT",
+            "error": None,
+            "answer": data.get("answer", ""),
+            "metadata": {
+                "model": data.get("model"),
+                "tokens_used": data.get("tokens_used"),
+                "latency_ms": data.get("latency_ms"),
+                "sources_count": len(data.get("sources", [])),
+                "routing": data.get("routing"),
+            },
+            "sources": data.get("sources", []),
+        }
+
+    return json.dumps(envelope)
 
 
 @mcp.tool(

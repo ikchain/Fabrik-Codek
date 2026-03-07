@@ -74,8 +74,14 @@ class Settings(BaseSettings):
     # Context Gate
     context_gate_enabled: bool = True
 
+    # Context Map — bypasses pipeline for predictable queries
+    context_map_enabled: bool = True
+
     # Relevance filter — minimum query-text token overlap to keep RAG results
     relevance_threshold: float = 0.12
+
+    # Context Aging — temporal decay half-life for RAG chunks in days
+    aging_half_life_days: float = 90.0
 
     # Logging
     log_level: str = "INFO"

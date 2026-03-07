@@ -259,6 +259,57 @@ class PersonalProfile:
 
         return " ".join(parts)
 
+    def to_fragment(self, name: str) -> str:
+        """Return a specific profile fragment by name.
+
+        Fragments:
+          identity   -- domain + language
+          tech_stack -- top topics (technologies)
+          patterns   -- coding patterns / actionable instructions
+          projects   -- task types detected (proxy for active projects)
+          decisions  -- empty (reserved for future use)
+          style      -- formality + verbosity
+        """
+        if name == "identity":
+            if self.domain == "unknown" or self.domain_confidence < 0.1:
+                return "You are a general-purpose assistant."
+            domain_label = self.domain.replace("_", " ")
+            part = f"You are assisting a {domain_label} professional."
+            if self.style.language != "en":
+                part += f" Respond in {self.style.language}."
+            return part
+
+        if name == "tech_stack":
+            if not self.top_topics:
+                return ""
+            topics = [t.topic for t in self.top_topics[:5]]
+            return f"Tech focus: {', '.join(topics)}."
+
+        if name == "patterns":
+            if not self.patterns:
+                return ""
+            return " ".join(f"{p}." for p in self.patterns[:5])
+
+        if name == "projects":
+            if not self.task_types_detected:
+                return ""
+            return f"Common tasks: {', '.join(self.task_types_detected[:5])}."
+
+        if name == "style":
+            parts = []
+            if self.style.formality > 0.7:
+                parts.append("Use formal tone.")
+            elif self.style.formality < 0.3:
+                parts.append("Use casual tone.")
+            if self.style.verbosity < 0.3:
+                parts.append("Be concise.")
+            elif self.style.verbosity > 0.7:
+                parts.append("Be detailed.")
+            return " ".join(parts)
+
+        # "decisions" and unknown fragments
+        return ""
+
 
 def save_profile(profile: PersonalProfile, path: Path) -> None:
     """Save a profile to a JSON file."""

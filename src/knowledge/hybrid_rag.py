@@ -4,7 +4,9 @@ Uses Reciprocal Rank Fusion (RRF) to merge results from multiple sources.
 Supports three retrieval tiers: vector (semantic), graph (relational), fulltext (keyword).
 """
 
+import math
 import re
+from datetime import datetime
 
 import structlog
 
@@ -28,6 +30,10 @@ ENTITY_MATCH_RATIO = 0.8
 
 # Post-retrieval relevance filter
 DEFAULT_RELEVANCE_THRESHOLD = 0.12
+
+# Context Aging — temporal decay for RAG chunks
+DEFAULT_AGING_HALF_LIFE_DAYS = 90.0
+DEFAULT_AGING_MIN_FACTOR = 0.3
 _STOPWORDS = frozenset(
     {
         "el",
@@ -156,6 +162,83 @@ class HybridRAGEngine:
         # Asymmetric: what fraction of query tokens appear in the text
         return overlap / len(query_tokens)
 
+    @staticmethod
+    def _compute_age_factor(
+        created_at: str | None,
+        half_life_days: float = DEFAULT_AGING_HALF_LIFE_DAYS,
+        min_factor: float = DEFAULT_AGING_MIN_FACTOR,
+        now: datetime | None = None,
+    ) -> float:
+        """Compute temporal decay factor for a RAG chunk.
+
+        Uses exponential half-life decay: factor = 0.5^(age_days / half_life).
+        Inspired by Winocur & Moscovitch (2011): episodic memory consolidates
+        into semantic over time.
+
+        Args:
+            created_at: ISO timestamp string of chunk creation.
+            half_life_days: Days until score halves (default 90).
+            min_factor: Floor so old but relevant chunks aren't zeroed.
+            now: Current time (for testing).
+
+        Returns:
+            Decay factor in [min_factor, 1.0].
+        """
+        if not created_at:
+            return 1.0  # No timestamp — no penalty
+
+        if now is None:
+            now = datetime.now()
+
+        try:
+            created = datetime.fromisoformat(created_at)
+        except (ValueError, TypeError):
+            return 1.0
+
+        age_days = (now - created).total_seconds() / 86400.0
+        if age_days <= 0:
+            return 1.0
+
+        factor = math.pow(0.5, age_days / half_life_days)
+        return max(factor, min_factor)
+
+    @staticmethod
+    def _apply_aging(
+        results: list[dict],
+        half_life_days: float = DEFAULT_AGING_HALF_LIFE_DAYS,
+        min_factor: float = DEFAULT_AGING_MIN_FACTOR,
+    ) -> list[dict]:
+        """Apply temporal decay to RRF scores and re-sort.
+
+        Modifies results in-place: multiplies score by age factor,
+        stores original score as ``score_raw`` and factor as ``age_factor``.
+        Re-sorts by decayed score descending.
+        """
+        now = datetime.now()
+        for r in results:
+            factor = HybridRAGEngine._compute_age_factor(
+                r.get("created_at"),
+                half_life_days=half_life_days,
+                min_factor=min_factor,
+                now=now,
+            )
+            raw_score = r.get("score", 0.0)
+            r["score_raw"] = raw_score
+            r["age_factor"] = round(factor, 3)
+            r["score"] = raw_score * factor
+
+        results.sort(key=lambda x: x.get("score", 0), reverse=True)
+
+        aged_count = sum(1 for r in results if r.get("age_factor", 1.0) < 1.0)
+        if aged_count > 0:
+            logger.debug(
+                "context_aging_applied",
+                total=len(results),
+                aged=aged_count,
+            )
+
+        return results
+
     async def retrieve(
         self,
         query: str,
@@ -219,6 +302,10 @@ class HybridRAGEngine:
 
         # 4. RRF fusion (three sources)
         fused = self._rrf_fusion(vector_results, graph_results, fulltext_results, limit=limit)
+
+        # 4b. Context Aging — temporal decay on RRF scores
+        if fused:
+            fused = self._apply_aging(fused)
 
         # 5. Post-retrieval relevance filter
         threshold = min_relevance if min_relevance is not None else DEFAULT_RELEVANCE_THRESHOLD

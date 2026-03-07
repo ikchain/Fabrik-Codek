@@ -39,7 +39,7 @@ from src.config import settings
 # Configurable via FABRIK_EMBEDDING_DIM env var (default: 768 for nomic-embed-text)
 EMBEDDING_DIM = settings.embedding_dim
 
-# Stop-RAG adaptive retrieval constants (FC-46)
+# Stop-RAG adaptive retrieval constants
 MIN_SIMILARITY_FLOOR: float = 0.2
 DEFAULT_CONFIDENCE_THRESHOLD: float = 0.7
 DEFAULT_MIN_K: int = 1
@@ -360,6 +360,7 @@ class RAGEngine:
                 "source": r["source"],
                 "category": r["category"],
                 "score": r.get("_distance", 0),
+                "created_at": r.get("created_at"),
             }
             for r in results
         ]
@@ -423,6 +424,7 @@ class RAGEngine:
                         "source": r["source"],
                         "category": r["category"],
                         "score": similarity,
+                        "created_at": r.get("created_at"),
                     }
                 )
 

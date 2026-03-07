@@ -4,7 +4,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests: 957](https://img.shields.io/badge/tests-957%20passing-brightgreen.svg)]()
+[![Tests: 1057](https://img.shields.io/badge/tests-1057%20passing-brightgreen.svg)]()
 
 > A 7B model that knows you is worth more than a 400B that doesn't.
 
@@ -141,6 +141,13 @@ Every interaction feeds back into the system. The more you use it, the better it
 - **Adaptive Retrieval** — Confidence-based stopping: fetches up to `max_k` results but returns only what's needed, with per-task thresholds
 - **Outcome Tracking** — Infers response quality from conversational patterns (topic changes, reformulations, negation) without manual feedback
 - **Strategy Optimizer** — Thompson Sampling (Multi-Armed Bandit) selects optimal retrieval strategy per task/topic. Falls back to static overrides when insufficient data
+- **Context Gate** — Heuristic gate that decides *whether* to inject context at all. Uses entity density, competence level, and task type signals. Prevents RAG contamination for simple queries
+- **Context Map** — Deterministic routing bypass for predictable queries (greetings, definitions, comparisons). Skips the full pipeline when the answer doesn't need retrieval. Inspired by [Savia](https://github.com/gonzalezpazmonica/pm-workspace)'s context engineering approach
+- **Profile Fragmentation** — Instead of injecting the full profile, loads only relevant fragments (identity, tech_stack, patterns, projects, style) per task type. Reduces prompt noise
+- **U-Shape Prompt Positioning** — System prompt ordered as task instruction → profile → competence, placing critical information at the beginning and end where LLM attention is strongest ([Liu et al. 2024](https://arxiv.org/abs/2307.03172))
+- **Context Aging** — Exponential half-life decay on RAG chunks: `score *= 0.5^(age_days / half_life)`. Recent knowledge is weighted higher than stale content
+- **Instincts Protocol** — Emergent behavioral patterns learned from repeated interactions. Patterns have variable confidence that increases with reinforcement and decays without use. Inspired by [Savia](https://github.com/gonzalezpazmonica/pm-workspace)'s synaptic context engineering
+- **Per-Task Token Control** — Each task type has its own `max_tokens` limit (768-1536), preventing verbose generation while allowing depth where needed
 
 ### Interfaces
 
@@ -410,6 +417,7 @@ fabrik mcp --transport sse --port 8421  # SSE (network)
 | `fabrik_graph_stats` | Graph statistics |
 | `fabrik_fulltext_search` | Full-text keyword search |
 | `fabrik_ask` | Ask with RAG/graph context |
+| `fabrik_ask_agent` | Structured JSON output for machine-to-machine use |
 
 Resources: `fabrik://status`, `fabrik://graph/stats`, `fabrik://config`
 
@@ -439,7 +447,11 @@ All settings via environment variables (`FABRIK_` prefix) or `.env` file.
 | `FABRIK_MEILISEARCH_KEY` | _(none)_ | Meilisearch API key |
 | `FABRIK_MEILISEARCH_INDEX` | `fabrik_knowledge` | Meilisearch index name |
 | `FABRIK_FULLTEXT_WEIGHT` | `0.0` | Full-text weight in RRF (0.0 = disabled) |
-| `FABRIK_GRAPH_DECAY_HALF_LIFE_DAYS` | `90` | Half-life for temporal decay |
+| `FABRIK_CONTEXT_GATE_ENABLED` | `true` | Enable context injection gate |
+| `FABRIK_CONTEXT_MAP_ENABLED` | `true` | Enable deterministic routing bypass |
+| `FABRIK_RELEVANCE_THRESHOLD` | `0.12` | Min query-text overlap for RAG results |
+| `FABRIK_AGING_HALF_LIFE_DAYS` | `90` | Half-life for RAG chunk aging |
+| `FABRIK_GRAPH_DECAY_HALF_LIFE_DAYS` | `90` | Half-life for graph temporal decay |
 | `FABRIK_LOG_LEVEL` | `INFO` | Log level |
 | `FABRIK_LOG_FORMAT` | `console` | Log format (`console` or `json`) |
 
@@ -455,7 +467,7 @@ fabrik-codek/
 │   │   └── extraction/     # Heuristic, LLM, Transcript extractors + Pipeline
 │   ├── flywheel/           # Collector, Session Observer, Outcome Tracker
 │   └── tools/              # Code analysis tools
-├── tests/                  # 847 tests
+├── tests/                  # 1057 tests
 ├── scripts/                # Setup, benchmarks, enrichment
 ├── data/                   # Local data storage
 ├── prompts/                # Prompt templates
@@ -485,6 +497,16 @@ python scripts/run_eval_benchmark.py --compare "qwen2.5-coder:7b,qwen2.5-coder:1
 3. Write tests for new functionality
 4. Ensure all tests pass (`pytest`)
 5. Submit a pull request
+
+## Acknowledgments
+
+Several features in Fabrik-Codek were inspired by **[Savia](https://github.com/gonzalezpazmonica/pm-workspace)** by [Monica González Paz](https://github.com/gonzalezpazmonica) — a cognitive context engineering system that implements synaptic protocols, spreading activation, and chunking-based memory. Specifically:
+
+- **Context Map** — deterministic routing bypass for predictable queries, adapted from Savia's context engineering patterns
+- **Instincts Protocol** — emergent behavioral patterns with confidence decay, inspired by Savia's synaptic learning approach
+- **Profile Fragmentation** — selective context loading per task type, drawing from Savia's granular context management
+
+While both projects pursue cognitive architectures, they take different approaches: Savia focuses on context engineering and prompt-level cognition, while Fabrik-Codek builds a closed feedback loop with knowledge graphs, competence modeling, and outcome-driven optimization. The cross-pollination made both better.
 
 ## License
 

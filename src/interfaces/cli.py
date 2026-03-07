@@ -206,8 +206,15 @@ def ask(
         # Route via TaskRouter for adaptive prompt/model/strategy
         from src.config import settings
         from src.core.competence_model import get_active_competence_map
+        from src.core.context_map import ContextMap
         from src.core.personal_profile import get_active_profile
-        from src.core.task_router import TaskRouter, load_learned_classifier
+        from src.core.task_router import (
+            RoutingDecision,
+            TaskRouter,
+            build_system_prompt,
+            get_strategy,
+            load_learned_classifier,
+        )
 
         active_profile = get_active_profile()
         competence_map = get_active_competence_map()
@@ -218,15 +225,57 @@ def ask(
         router = TaskRouter(
             competence_map, active_profile, settings, mab=mab, learned_classifier=learned
         )
-        decision = await router.route(prompt)
 
-        console.print(
-            f"[dim]Router: {decision.task_type} "
-            f"({decision.classification_method}) "
-            f"| topic={decision.topic or '—'} "
-            f"| competence={decision.competence_level} "
-            f"| model={decision.model}[/dim]"
-        )
+        # Context-Map determinista — check before full pipeline
+        context_map_result = None
+        if settings.context_map_enabled:
+            cmap_path = settings.data_dir / "profile" / "context_map.json"
+            cmap = ContextMap.from_file(cmap_path)
+            context_map_result = cmap.match(prompt)
+
+        if context_map_result is not None:
+            # Shortcut: skip Router + RAG entirely
+            entry = context_map_result.entry
+            sys_prompt = build_system_prompt(
+                active_profile,
+                competence_map,
+                entry.task_type,
+                profile_fragments=entry.profile_fragments,
+            )
+            decision = RoutingDecision(
+                task_type=entry.task_type,
+                topic=None,
+                competence_level="Mapped",
+                model=settings.default_model,
+                strategy=get_strategy(entry.task_type),
+                system_prompt=sys_prompt,
+                classification_method="context_map",
+            )
+            from src.core.context_gate import GateDecision
+
+            gate_decision = GateDecision(
+                inject=entry.use_context,
+                reason="context_map",
+                confidence=1.0,
+                signals={"context_map": True, "pattern": context_map_result.matched_pattern},
+            )
+            decision.gate_decision = gate_decision
+
+            console.print(
+                f"[dim]Context-Map: {entry.task_type} "
+                f"| context={'inject' if entry.use_context else 'skip'} "
+                f"| fragments={entry.profile_fragments}[/dim]"
+            )
+        else:
+            decision = await router.route(prompt)
+
+            console.print(
+                f"[dim]Router: {decision.task_type} "
+                f"({decision.classification_method}) "
+                f"| topic={decision.topic or '—'} "
+                f"| competence={decision.competence_level} "
+                f"| model={decision.model}[/dim]"
+            )
 
         # Inject hybrid RAG context (vector + graph)
         if use_graph:
@@ -285,6 +334,7 @@ Responde usando el contexto cuando sea relevante."""
                     final_prompt,
                     system=decision.system_prompt,
                     model=decision.model,
+                    max_tokens=decision.strategy.max_tokens,
                 )
 
             console.print(Markdown(response.content))
