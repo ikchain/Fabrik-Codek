@@ -32,6 +32,56 @@ fabrik status                            # System health
 
 > **Prerequisite**: [Ollama](https://ollama.ai/) must be installed and running. Works with Qwen, Llama, DeepSeek, Codestral, Phi, Mistral, and any other Ollama model. Switch models with `--model` or in `.env`.
 
+## Run with Docker Compose
+
+The repository now includes a `Dockerfile` and `docker-compose.yml` to run the API in a container.
+
+```bash
+docker compose build
+docker compose up -d
+```
+
+API will be available at `http://localhost:8420` (`/health`, `/docs`, `/ask`, `/chat`).
+
+By default, Compose bind-mounts the project `./data` directory into `/app/data`, so
+vector DBs, graph state, profile files, and flywheel data remain on the host and survive
+container rebuilds.
+
+If you want to persist data in a different host path:
+
+```bash
+FABRIK_DATA_PATH=/absolute/path/to/fabrik-data docker compose up -d
+```
+
+PowerShell:
+
+```powershell
+$env:FABRIK_DATA_PATH="E:\fabrik-data"
+docker compose up -d
+```
+
+If you prefer Docker-managed persistence instead of the host project folder, swap the
+bind mount in `docker-compose.yml` for the provided named-volume line.
+
+By default, the container expects Ollama on the host machine:
+
+```bash
+FABRIK_OLLAMA_HOST=http://host.docker.internal:11434
+```
+
+If you want full-text search with Meilisearch:
+
+```bash
+docker compose --profile fulltext up -d
+```
+
+For one-off CLI commands inside the container:
+
+```bash
+docker compose run --rm fabrik fabrik status
+docker compose run --rm fabrik fabrik ask "Explain repository pattern" --rag
+```
+
 ## What Makes It Different
 
 Most local AI tools are stateless wrappers around an LLM. Fabrik-Codek is **stateful and adaptive**:
