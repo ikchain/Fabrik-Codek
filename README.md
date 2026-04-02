@@ -4,7 +4,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests: 1058](https://img.shields.io/badge/tests-1058%20passing-brightgreen.svg)]()
+[![Tests: 1091](https://img.shields.io/badge/tests-1091%20passing-brightgreen.svg)]()
 
 > A 7B model that knows you is worth more than a 400B that doesn't.
 
@@ -45,6 +45,7 @@ Most local AI tools are stateless wrappers around an LLM. Fabrik-Codek is **stat
 | **Self-corrects** | Strategy Optimizer adjusts retrieval parameters for underperforming topic/task combinations |
 | **Filters noise** | Context Gate prevents RAG contamination on simple queries; Relevance Filter drops irrelevant chunks post-retrieval |
 | **Keeps knowledge fresh** | Graph Temporal Decay fades stale knowledge; Semantic Drift Detection alerts when contexts shift |
+| **Compacts long sessions** | 3-layer context compaction (snip, summarize, emergency) with adaptive thresholds per task type — keeps 7B models in their quality-safe zone |
 | **Domain-agnostic** | Works for any profession. A lawyer's datalake produces a legal profile. A trader's datalake produces a trading profile |
 
 ## Architecture
@@ -81,7 +82,7 @@ graph TB
         Logger[Quality-Gated Logger]
     end
 
-    CLI --> Router
+    CLI --> Compaction --> Router
     API --> Router
     MCP --> Router
     Router --> Profile
@@ -89,6 +90,7 @@ graph TB
     Router --> Strategy
     Router --> Gate
     Gate -->|3-layer prompt| Hybrid
+    Compaction[Context Compaction]
     Instincts -->|behavioral hints| Router
 
     Hybrid --> RAG
@@ -153,6 +155,7 @@ Every interaction feeds back into the system. The more you use it, the better it
 - **U-Shape Prompt Positioning** — System prompt ordered as task instruction → profile → competence, placing critical information at the beginning and end where LLM attention is strongest ([Liu et al. 2024](https://arxiv.org/abs/2307.03172))
 - **Context Aging** — Exponential half-life decay on RAG chunks: `score *= 0.5^(age_days / half_life)`. Recent knowledge is weighted higher than stale content
 - **Instincts Protocol** — Emergent behavioral patterns learned from repeated interactions. Patterns have variable confidence that increases with reinforcement and decays without use. Inspired by [Savia](https://github.com/gonzalezpazmonica/pm-workspace)'s synaptic context engineering
+- **Context Compaction** — 3-layer system for long chat sessions: snip-compact (drop middle turns, zero cost), summary-compact (LLM summarizes discarded turns into structured bullets, temp=0), and emergency truncation. Adaptive thresholds per task type — debugging sessions get more history budget than general queries. Keeps small models in their quality-safe input range
 - **Per-Task Token Control** — Each task type has its own `max_tokens` limit (768-1536), preventing verbose generation while allowing depth where needed
 
 ### Interfaces
@@ -458,6 +461,8 @@ All settings via environment variables (`FABRIK_` prefix) or `.env` file.
 | `FABRIK_CONTEXT_GATE_ENABLED` | `true` | Enable context injection gate |
 | `FABRIK_CONTEXT_MAP_ENABLED` | `true` | Enable deterministic routing bypass |
 | `FABRIK_RELEVANCE_THRESHOLD` | `0.12` | Min query-text overlap for RAG results |
+| `FABRIK_COMPACT_SOFT_LIMIT` | `3500` | Token threshold for snip-compact (history only) |
+| `FABRIK_COMPACT_HARD_LIMIT` | `5000` | Token threshold for summary-compact |
 | `FABRIK_AGING_HALF_LIFE_DAYS` | `90` | Half-life for RAG chunk aging |
 | `FABRIK_GRAPH_DECAY_HALF_LIFE_DAYS` | `90` | Half-life for graph temporal decay |
 | `FABRIK_LOG_LEVEL` | `INFO` | Log level |
@@ -470,13 +475,13 @@ fabrik-codek/
 ├── src/
 │   ├── config/             # Settings (Pydantic BaseSettings)
 │   ├── core/               # LLM client, Profile, Competence, Router, Optimizer,
-│   │                       # Context Gate, Context Map, Instincts
+│   │                       # Context Gate, Context Map, Instincts, Compaction
 │   ├── interfaces/         # CLI (Typer) + API (FastAPI) + MCP (FastMCP)
 │   ├── knowledge/          # RAG, Graph, Hybrid RAG, Full-Text
 │   │   └── extraction/     # Heuristic, LLM, Transcript extractors + Pipeline
 │   ├── flywheel/           # Collector, Session Observer, Outcome Tracker
 │   └── tools/              # Code analysis tools
-├── tests/                  # 1058 tests
+├── tests/                  # 1091 tests
 ├── scripts/                # Setup, benchmarks, enrichment
 ├── data/                   # Local data storage
 ├── prompts/                # Prompt templates
