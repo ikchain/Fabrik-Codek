@@ -4,7 +4,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests: 1118](https://img.shields.io/badge/tests-1118%20passing-brightgreen.svg)]()
+[![Tests: 1136](https://img.shields.io/badge/tests-1136%20passing-brightgreen.svg)]()
 
 > A 7B model that knows you is worth more than a 400B that doesn't.
 
@@ -482,7 +482,7 @@ fabrik-codek/
 │   │   └── extraction/     # Heuristic, LLM, Transcript extractors + Pipeline
 │   ├── flywheel/           # Collector, Session Observer, Outcome Tracker
 │   └── tools/              # Code analysis tools
-├── tests/                  # 1118 tests
+├── tests/                  # 1136 tests
 ├── scripts/                # Setup, benchmarks, enrichment
 ├── data/                   # Local data storage
 ├── prompts/                # Prompt templates

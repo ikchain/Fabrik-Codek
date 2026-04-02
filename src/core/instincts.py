@@ -10,7 +10,7 @@ Categories:
   - workflow: sequences of queries the user repeats
   - preference: format/detail preferences
   - shortcut: natural aliases the user uses
-  - context: topic->strategy associations
+  - context: topic→strategy associations
   - timing: temporal patterns (e.g., "morning = debugging")
 """
 
@@ -39,6 +39,10 @@ DECAY_DAYS = 30  # Days without use before decay kicks in
 
 VALID_CATEGORIES = frozenset({"workflow", "preference", "shortcut", "context", "timing"})
 
+# Auto-creation constants
+AUTO_CONFIDENCE = 0.35
+MIN_QUERY_WORDS = 5
+
 
 @dataclass
 class Instinct:
@@ -53,6 +57,7 @@ class Instinct:
     created: str = field(default_factory=lambda: datetime.now().isoformat())
     last_used: str | None = None
     enabled: bool = True
+    auto_created: bool = False
 
     def reinforce(self) -> None:
         """Increase confidence after successful use."""
@@ -90,6 +95,17 @@ class Instinct:
         return False
 
     @property
+    def days_since_used(self) -> int | None:
+        """Days since last use. None if never used."""
+        if not self.last_used:
+            return None
+        try:
+            last = datetime.fromisoformat(self.last_used)
+        except (ValueError, TypeError):
+            return None
+        return int((datetime.now() - last).total_seconds() / 86400.0)
+
+    @property
     def needs_review(self) -> bool:
         """Whether this instinct should be flagged for manual review."""
         return self.confidence < REVIEW_THRESHOLD
@@ -105,6 +121,7 @@ class Instinct:
             "created": self.created,
             "last_used": self.last_used,
             "enabled": self.enabled,
+            "auto_created": self.auto_created,
         }
 
     @classmethod
@@ -119,6 +136,7 @@ class Instinct:
             created=data.get("created", datetime.now().isoformat()),
             last_used=data.get("last_used"),
             enabled=data.get("enabled", True),
+            auto_created=data.get("auto_created", False),
         )
 
 
@@ -264,3 +282,85 @@ class InstinctRegistry:
                 cat: len([i for i in all_inst if i.category == cat]) for cat in VALID_CATEGORIES
             },
         }
+
+
+# ---------------------------------------------------------------------------
+# Session Pattern Tracker — auto-creates instincts from chat patterns
+# ---------------------------------------------------------------------------
+
+
+class SessionPatternTracker:
+    """Detects repeated topics in a chat session and auto-creates instincts.
+
+    Uses topic frequency: when a topic appears >= MIN_PATTERN_COUNT times,
+    a context instinct is auto-created with AUTO_CONFIDENCE.
+    """
+
+    def __init__(
+        self,
+        registry: InstinctRegistry,
+        competence_map,
+        session_id: str,
+    ) -> None:
+        self._registry = registry
+        self._competence_map = competence_map
+        self._session_id = session_id
+        self._topic_counts: dict[str, int] = {}
+        self._created_topics: set[str] = set()
+
+    def observe(self, query: str) -> Instinct | None:
+        """Track topic frequency, auto-create instinct if threshold reached.
+
+        Returns newly created Instinct, or None.
+        """
+        if self._competence_map is None:
+            return None
+
+        # Noise filter: skip short queries
+        if len(query.split()) < MIN_QUERY_WORDS:
+            return None
+
+        # Detect topic
+        from src.core.task_router import detect_topic
+
+        topic = detect_topic(query, self._competence_map)
+        if topic is None:
+            return None
+
+        topic_lower = topic.lower()
+
+        # Already created this session
+        if topic_lower in self._created_topics:
+            return None
+
+        # Increment count
+        self._topic_counts[topic_lower] = self._topic_counts.get(topic_lower, 0) + 1
+
+        if self._topic_counts[topic_lower] < MIN_PATTERN_COUNT:
+            return None
+
+        # Check if enabled instinct with same pattern already exists
+        if any(i.pattern.lower() == topic_lower for i in self._registry.instincts if i.enabled):
+            self._created_topics.add(topic_lower)  # don't try again
+            return None
+
+        # Auto-create
+        instinct = Instinct(
+            id=f"auto_{topic_lower}_{self._session_id[:8]}",
+            pattern=topic_lower,
+            action=f"Focus on {topic} context",
+            category="context",
+            confidence=AUTO_CONFIDENCE,
+            auto_created=True,
+        )
+        self._registry.add(instinct)
+        self._created_topics.add(topic_lower)
+
+        logger.info(
+            "instinct_auto_created",
+            topic=topic,
+            id=instinct.id,
+            confidence=AUTO_CONFIDENCE,
+        )
+
+        return instinct

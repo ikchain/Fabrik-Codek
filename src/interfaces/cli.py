@@ -79,7 +79,8 @@ def chat(
             from src.flywheel.collector import bridge_outcome_to_feedback
             from src.flywheel.outcome_tracker import OutcomeTracker
 
-            tracker = OutcomeTracker(settings.datalake_path, str(uuid4()))
+            session_id = str(uuid4())
+            tracker = OutcomeTracker(settings.datalake_path, session_id)
 
             initial_decision = await router.route("general conversation")
             if not system:
@@ -90,7 +91,21 @@ def chat(
 
             compaction_thresholds = get_thresholds(initial_decision.task_type)
 
+            # Instincts
+            from src.core.instincts import (
+                DECAY_DAYS,
+                InstinctRegistry,
+                SessionPatternTracker,
+            )
+
+            instinct_path = settings.data_dir / "profile" / "instincts.json"
+            instinct_registry = InstinctRegistry(instinct_path)
+            pattern_tracker = SessionPatternTracker(
+                instinct_registry, competence_map, session_id
+            )
+
             last_record_id = None
+            prev_matched_instincts: list = []
 
             while True:
                 try:
@@ -112,6 +127,20 @@ def chat(
                     continue
 
                 messages.append({"role": "user", "content": user_input})
+
+                # Instincts: match + display + auto-create
+                matched_instincts = instinct_registry.match(user_input)
+                for inst in matched_instincts[:2]:
+                    dsu = inst.days_since_used
+                    if dsu is not None and dsu > DECAY_DAYS:
+                        console.print(f"[dim]⚠ Stale ({dsu}d): {inst.action}[/dim]")
+                    else:
+                        console.print(
+                            f"[dim]Instinct ({inst.confidence:.0%}): {inst.action}[/dim]"
+                        )
+                new_instinct = pattern_tracker.observe(user_input)
+                if new_instinct:
+                    console.print(f"[dim]✦ New instinct: {new_instinct.action}[/dim]")
 
                 # Compaction check
                 compacted, compact_action = await compact_if_needed(
@@ -176,9 +205,19 @@ def chat(
                             reward=1.0 if prev_outcome.outcome == "accepted" else 0.0,
                         )
 
+                # Reinforce/penalize instincts from PREVIOUS turn
+                if prev_outcome is not None and prev_matched_instincts:
+                    for inst in prev_matched_instincts:
+                        if prev_outcome.outcome == "accepted":
+                            instinct_registry.reinforce(inst.id)
+                        elif prev_outcome.outcome == "rejected":
+                            instinct_registry.penalize(inst.id)
+
+                prev_matched_instincts = matched_instincts
                 last_record_id = record.id
 
         mab.save_state()
+        instinct_registry.apply_decay_all()
         tracker.close_session()
         stats = tracker.get_session_stats()
         if stats["total"] > 0:

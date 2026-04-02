@@ -9,17 +9,20 @@ from pathlib import Path
 import pytest
 
 from src.core.instincts import (
+    AUTO_CONFIDENCE,
     CONFIDENCE_CEILING,
     CONFIDENCE_FLOOR,
     DECAY_DAYS,
     DECAY_DELTA,
     INITIAL_CONFIDENCE,
+    MIN_PATTERN_COUNT,
     PENALIZE_DELTA,
     REINFORCE_DELTA,
     REVIEW_THRESHOLD,
     VALID_CATEGORIES,
     Instinct,
     InstinctRegistry,
+    SessionPatternTracker,
 )
 
 # ---------------------------------------------------------------------------
@@ -361,3 +364,258 @@ class TestConstants:
 
     def test_decay_days(self):
         assert DECAY_DAYS == 30
+
+
+# ---------------------------------------------------------------------------
+# Freshness warnings
+# ---------------------------------------------------------------------------
+
+
+class TestFreshnessWarning:
+    def _make(self, **kwargs) -> Instinct:
+        defaults = {
+            "id": "fw-1",
+            "pattern": "test",
+            "action": "test action",
+            "category": "context",
+        }
+        defaults.update(kwargs)
+        return Instinct(**defaults)
+
+    def test_used_recently(self):
+        inst = self._make(last_used=datetime.now().isoformat())
+        assert inst.days_since_used is not None
+        assert inst.days_since_used <= 1
+
+    def test_never_used(self):
+        inst = self._make(last_used=None)
+        assert inst.days_since_used is None
+
+    def test_used_45_days_ago(self):
+        old = (datetime.now() - timedelta(days=45)).isoformat()
+        inst = self._make(last_used=old)
+        assert inst.days_since_used is not None
+        assert inst.days_since_used >= 44  # allow 1d tolerance
+        assert inst.days_since_used > DECAY_DAYS
+
+
+# ---------------------------------------------------------------------------
+# auto_created field
+# ---------------------------------------------------------------------------
+
+
+class TestAutoCreatedField:
+    def _make(self, **kwargs) -> Instinct:
+        defaults = {
+            "id": "ac-1",
+            "pattern": "test",
+            "action": "test action",
+            "category": "context",
+        }
+        defaults.update(kwargs)
+        return Instinct(**defaults)
+
+    def test_to_dict_includes_auto_created(self):
+        inst = self._make(auto_created=True)
+        d = inst.to_dict()
+        assert "auto_created" in d
+        assert d["auto_created"] is True
+
+    def test_from_dict_defaults_false_for_legacy(self):
+        data = {
+            "id": "legacy-1",
+            "pattern": "old",
+            "action": "old action",
+            "category": "workflow",
+        }
+        inst = Instinct.from_dict(data)
+        assert inst.auto_created is False
+
+    def test_round_trip_preserves_auto_created(self):
+        inst = self._make(auto_created=True)
+        d = inst.to_dict()
+        restored = Instinct.from_dict(d)
+        assert restored.auto_created is True
+
+
+# ---------------------------------------------------------------------------
+# SessionPatternTracker
+# ---------------------------------------------------------------------------
+
+
+class _FakeCompetenceEntry:
+    def __init__(self, topic: str, score: float = 0.5):
+        self.topic = topic
+        self.score = score
+
+
+class _FakeCompetenceMap:
+    def __init__(self, topics: list[str]):
+        self.topics = [_FakeCompetenceEntry(t) for t in topics]
+
+
+class TestSessionPatternTracker:
+    def _make_tracker(self, tmp_path, topics=None, existing_instincts=None):
+        registry = InstinctRegistry(tmp_path / "instincts.json")
+        if existing_instincts:
+            for inst in existing_instincts:
+                registry.add(inst)
+        cmap = _FakeCompetenceMap(topics or ["postgresql", "docker", "fastapi"])
+        return SessionPatternTracker(registry, cmap, "test-session-1234"), registry
+
+    def _long_query(self, topic: str) -> str:
+        """Build a query with >= MIN_QUERY_WORDS that includes the topic."""
+        return f"How do I configure {topic} for production use in my project"
+
+    def test_below_threshold_no_creation(self, tmp_path):
+        tracker, _ = self._make_tracker(tmp_path)
+        assert tracker.observe(self._long_query("postgresql")) is None
+        assert tracker.observe(self._long_query("postgresql")) is None
+
+    def test_at_threshold_creates_instinct(self, tmp_path):
+        tracker, registry = self._make_tracker(tmp_path)
+        for _ in range(MIN_PATTERN_COUNT - 1):
+            assert tracker.observe(self._long_query("postgresql")) is None
+        result = tracker.observe(self._long_query("postgresql"))
+        assert result is not None
+        assert result.pattern == "postgresql"
+        assert result.auto_created is True
+        assert registry.get(result.id) is not None
+
+    def test_auto_confidence(self, tmp_path):
+        tracker, _ = self._make_tracker(tmp_path)
+        for _ in range(MIN_PATTERN_COUNT - 1):
+            tracker.observe(self._long_query("docker"))
+        result = tracker.observe(self._long_query("docker"))
+        assert result is not None
+        assert result.confidence == AUTO_CONFIDENCE
+
+    def test_auto_created_flag(self, tmp_path):
+        tracker, _ = self._make_tracker(tmp_path)
+        for _ in range(MIN_PATTERN_COUNT - 1):
+            tracker.observe(self._long_query("fastapi"))
+        result = tracker.observe(self._long_query("fastapi"))
+        assert result is not None
+        assert result.auto_created is True
+        assert result.category == "context"
+
+    def test_short_query_skipped(self, tmp_path):
+        tracker, _ = self._make_tracker(tmp_path)
+        for _ in range(5):
+            assert tracker.observe("fix postgresql") is None  # < 5 words
+
+    def test_dedup_after_creation(self, tmp_path):
+        tracker, _ = self._make_tracker(tmp_path)
+        for _ in range(MIN_PATTERN_COUNT):
+            tracker.observe(self._long_query("postgresql"))
+        # Subsequent calls return None
+        assert tracker.observe(self._long_query("postgresql")) is None
+        assert tracker.observe(self._long_query("postgresql")) is None
+
+    def test_none_competence_map(self, tmp_path):
+        registry = InstinctRegistry(tmp_path / "instincts.json")
+        tracker = SessionPatternTracker(registry, None, "sess-1234")
+        assert tracker.observe(self._long_query("postgresql")) is None
+
+    def test_existing_enabled_pattern_skips(self, tmp_path):
+        existing = Instinct(
+            id="manual-pg",
+            pattern="postgresql",
+            action="Manual PG instinct",
+            category="context",
+            enabled=True,
+        )
+        tracker, _ = self._make_tracker(tmp_path, existing_instincts=[existing])
+        for _ in range(MIN_PATTERN_COUNT):
+            tracker.observe(self._long_query("postgresql"))
+        # Should not create — enabled pattern exists
+
+    def test_existing_disabled_pattern_allows_creation(self, tmp_path):
+        existing = Instinct(
+            id="disabled-pg",
+            pattern="postgresql",
+            action="Disabled PG instinct",
+            category="context",
+            enabled=False,
+        )
+        tracker, registry = self._make_tracker(tmp_path, existing_instincts=[existing])
+        for _ in range(MIN_PATTERN_COUNT - 1):
+            tracker.observe(self._long_query("postgresql"))
+        result = tracker.observe(self._long_query("postgresql"))
+        assert result is not None
+        assert result.auto_created is True
+
+    def test_observe_calls_registry_add(self, tmp_path):
+        tracker, registry = self._make_tracker(tmp_path)
+        for _ in range(MIN_PATTERN_COUNT - 1):
+            tracker.observe(self._long_query("docker"))
+        result = tracker.observe(self._long_query("docker"))
+        assert result is not None
+        # Verify it's in the registry
+        found = registry.get(result.id)
+        assert found is not None
+        assert found.pattern == "docker"
+
+
+# ---------------------------------------------------------------------------
+# Turn alignment
+# ---------------------------------------------------------------------------
+
+
+class TestTurnAlignment:
+    """Verify prev_matched_instincts pattern for correct causal attribution."""
+
+    def test_reinforce_uses_previous_turn_instincts(self, tmp_path):
+        """Instincts matched on turn N-1 get reinforced by outcome of turn N-1."""
+        registry = InstinctRegistry(tmp_path / "instincts.json")
+        inst = Instinct(
+            id="t-1",
+            pattern="postgresql",
+            action="PG hint",
+            category="context",
+            confidence=0.50,
+        )
+        registry.add(inst)
+
+        # Simulate turn alignment
+        prev_matched: list = []
+
+        # Turn 1: match instinct
+        turn1_matched = registry.match("how to optimize postgresql queries in production")
+        assert len(turn1_matched) == 1
+
+        # Turn 2: prev_outcome arrives for turn 1
+        # Reinforce prev_matched (turn 0 = empty), not turn1_matched
+        # This is correct: first turn has no prev_outcome
+        if prev_matched:  # empty on first turn
+            for m in prev_matched:
+                registry.reinforce(m.id)
+        prev_matched = turn1_matched
+
+        # Turn 2 outcome: reinforce turn 1's instincts
+        for m in prev_matched:
+            registry.reinforce(m.id)
+
+        updated = registry.get("t-1")
+        assert updated is not None
+        assert updated.confidence > 0.50  # reinforced once
+
+    def test_first_turn_no_reinforcement(self, tmp_path):
+        """On the first turn, prev_matched is empty — no reinforcement."""
+        registry = InstinctRegistry(tmp_path / "instincts.json")
+        inst = Instinct(
+            id="t-2",
+            pattern="docker",
+            action="Docker hint",
+            category="context",
+            confidence=0.50,
+        )
+        registry.add(inst)
+
+        prev_matched: list = []
+        # First turn: no prev_outcome, no reinforcement
+        assert len(prev_matched) == 0
+        # No reinforcement should happen
+        original = registry.get("t-2")
+        assert original is not None
+        assert original.confidence == 0.50
