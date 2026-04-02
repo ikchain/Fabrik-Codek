@@ -352,6 +352,18 @@ async def fabrik_ask(
             decision.gate_decision = gate_decision
             inject_context = gate_decision.inject
 
+            # Conditional personalization
+            from src.core.competence_model import CompetenceMap, get_active_competence_map
+            from src.core.personal_profile import PersonalProfile, get_active_profile
+            from src.core.task_router import build_system_prompt
+
+            mcp_profile = get_active_profile() or PersonalProfile(domain="", patterns=[])
+            mcp_competence = get_active_competence_map() or CompetenceMap(topics=[], built_at="")
+            decision.system_prompt = build_system_prompt(
+                mcp_profile, mcp_competence, decision.task_type,
+                personalize=gate_decision.inject,
+            )
+
     effective_depth = decision.strategy.graph_depth if decision else graph_depth
 
     effective_prompt = prompt

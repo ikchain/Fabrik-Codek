@@ -249,7 +249,7 @@ class TestStrategySelection:
 
 
 class TestEscalationLogic:
-    """Escalation disabled. All levels use default_model."""
+    """FC-54: Escalation disabled. All levels use default_model."""
 
     def test_expert_uses_default_model(self):
         model = get_model("Expert", "qwen2.5-coder:14b", "qwen2.5-coder:32b")
@@ -260,22 +260,22 @@ class TestEscalationLogic:
         assert model == "qwen2.5-coder:14b"
 
     def test_novice_uses_default_model(self):
-        """Novice no longer escalates to fallback."""
+        """FC-54: Novice no longer escalates to fallback."""
         model = get_model("Novice", "qwen2.5-coder:14b", "qwen2.5-coder:32b")
         assert model == "qwen2.5-coder:14b"
 
     def test_unknown_uses_default_model(self):
-        """Unknown no longer escalates to fallback."""
+        """FC-54: Unknown no longer escalates to fallback."""
         model = get_model("Unknown", "qwen2.5-coder:14b", "qwen2.5-coder:32b")
         assert model == "qwen2.5-coder:14b"
 
     def test_empty_level_uses_default(self):
-        """Empty level no longer escalates to fallback."""
+        """FC-54: Empty level no longer escalates to fallback."""
         model = get_model("", "default", "fallback")
         assert model == "default"
 
     def test_no_topic_uses_default(self):
-        """No topic detected still uses default model."""
+        """FC-54: No topic detected still uses default model."""
         model = get_model("Unknown", "default", "fallback")
         assert model == "default"
 
@@ -453,7 +453,7 @@ class TestTaskRouterIntegration:
         assert decision.classification_method == "keyword"
 
     def test_route_unknown_topic_uses_default(self):
-        """Unknown topic no longer escalates to fallback."""
+        """FC-54: Unknown topic no longer escalates to fallback."""
         router = self._make_router()
         decision = asyncio.run(router.route("deploy kubernetes cluster"))
         assert decision.topic == "kubernetes"
@@ -461,7 +461,7 @@ class TestTaskRouterIntegration:
         assert decision.model == "qwen2.5-coder:14b"
 
     def test_route_no_topic_uses_default(self):
-        """No topic no longer escalates to fallback."""
+        """FC-54: No topic no longer escalates to fallback."""
         router = self._make_router()
         decision = asyncio.run(router.route("fix this random error"))
         assert decision.topic is None
@@ -471,9 +471,15 @@ class TestTaskRouterIntegration:
     def test_route_system_prompt_has_three_layers(self):
         router = self._make_router()
         decision = asyncio.run(router.route("fix the error in postgresql"))
-        assert "software development" in decision.system_prompt.lower()
-        assert "Expert in:" in decision.system_prompt
-        assert "root cause" in decision.system_prompt.lower()
+        prompt = decision.system_prompt
+        # U-Shape: task instruction first, profile middle, competence end
+        assert "root cause" in prompt.lower()  # task instruction
+        assert "software development" in prompt.lower()  # profile
+        assert "Expert in:" in prompt  # competence
+        # Verify U-Shape order: task before profile
+        task_pos = prompt.lower().index("root cause")
+        profile_pos = prompt.lower().index("software development")
+        assert task_pos < profile_pos, "U-Shape: task instruction should come before profile"
 
     def test_route_strategy_matches_task_type(self):
         router = self._make_router()
@@ -725,11 +731,12 @@ class TestMABIntegration:
 
     @pytest.mark.asyncio
     async def test_mab_cascade_evolved_applied(self, tmp_path):
-        """Evolved strategies refine MAB-selected strategy (cascade)."""
+        """Evolved strategies refine MAB-selected strategy (FC-83 cascade)."""
         import json
 
         from src.core.strategy_optimizer import MABStrategyOptimizer
 
+        # Write evolved strategies with a distinctive value
         profile_dir = tmp_path / "profile"
         profile_dir.mkdir()
         evolved = {"strategies": {"debugging": {"graph_depth": 5, "vector_weight": 0.99}}}
@@ -747,18 +754,20 @@ class TestMABIntegration:
 
         decision = await router.route("debug this python error")
         assert decision.arm_id is not None
+        # Evolved values must cascade on top of MAB
         assert decision.strategy.graph_depth == 5
         assert decision.strategy.vector_weight == 0.99
 
     @pytest.mark.asyncio
     async def test_mab_cascade_override_applied(self, tmp_path):
-        """Static overrides correct MAB+evolved strategy (cascade)."""
+        """Static overrides correct MAB+evolved strategy (FC-83 cascade)."""
         import json
 
         from src.core.strategy_optimizer import MABStrategyOptimizer
 
         profile_dir = tmp_path / "profile"
         profile_dir.mkdir()
+        # Override for debugging (no topic)
         overrides = {"debugging": {"min_k": 7, "max_k": 12}}
         (profile_dir / "strategy_overrides.json").write_text(json.dumps(overrides))
 
@@ -779,7 +788,7 @@ class TestMABIntegration:
 
     @pytest.mark.asyncio
     async def test_mab_cascade_full_chain(self, tmp_path):
-        """Full cascade: MAB then evolved then overrides."""
+        """Full cascade: MAB → evolved → overrides (FC-83)."""
         import json
 
         from src.core.strategy_optimizer import MABStrategyOptimizer
@@ -803,12 +812,14 @@ class TestMABIntegration:
 
         decision = await router.route("debug this python error")
         assert decision.arm_id is not None
+        # Evolved sets graph_depth=4
         assert decision.strategy.graph_depth == 4
+        # Override overwrites vector_weight from evolved 0.85 → 0.95
         assert decision.strategy.vector_weight == 0.95
 
 
 # ---------------------------------------------------------------------------
-# Task 10: Confidence threshold fields
+# Task 10: Confidence threshold fields (FC-46)
 # ---------------------------------------------------------------------------
 
 
@@ -1410,3 +1421,308 @@ class TestBuildCorpusGuard:
             saved = json.load(f)
         assert len(saved) == 1
         assert saved[0]["query"] == "fix error"
+
+
+# ---------------------------------------------------------------------------
+# U-Shape Prompt Positioning
+# ---------------------------------------------------------------------------
+
+
+class TestUShapePrompt:
+    """Verify build_system_prompt follows U-Shape ordering."""
+
+    def _make_profile(self):
+        from src.core.personal_profile import TopicWeight
+
+        return PersonalProfile(
+            domain="software_development",
+            domain_confidence=0.9,
+            top_topics=[TopicWeight("python", 0.8), TopicWeight("docker", 0.6)],
+            patterns=["Use Python with FastAPI", "Prefer async patterns"],
+            style=StyleProfile(language="en"),
+        )
+
+    def _make_competence(self):
+        return CompetenceMap(topics=[CompetenceEntry(topic="python", score=0.9, level="Expert")])
+
+    def test_ushape_task_first(self):
+        """Task instruction should appear before profile."""
+        prompt = build_system_prompt(self._make_profile(), self._make_competence(), "debugging")
+        task_pos = prompt.lower().index("root cause")
+        profile_pos = prompt.lower().index("software development")
+        assert task_pos < profile_pos
+
+    def test_ushape_competence_last(self):
+        """Competence fragment should appear after profile."""
+        prompt = build_system_prompt(self._make_profile(), self._make_competence(), "debugging")
+        profile_pos = prompt.lower().index("software development")
+        competence_pos = prompt.index("Expert in:")
+        assert competence_pos > profile_pos
+
+    def test_ushape_with_fragments(self):
+        """Profile fragments should be used instead of full profile."""
+        prompt = build_system_prompt(
+            self._make_profile(),
+            self._make_competence(),
+            "explanation",
+            profile_fragments=["identity", "tech_stack"],
+        )
+        assert "software development" in prompt.lower()  # identity fragment
+        assert "Tech focus:" in prompt  # tech_stack fragment
+        # Patterns should NOT be present (not in fragments)
+        assert "FastAPI" not in prompt
+
+    def test_ushape_fragments_identity_only(self):
+        """Identity-only fragment should be minimal."""
+        prompt = build_system_prompt(
+            self._make_profile(),
+            self._make_competence(),
+            "general",
+            profile_fragments=["identity"],
+        )
+        assert "software development" in prompt.lower()
+        assert "Tech focus:" not in prompt
+        assert "FastAPI" not in prompt
+
+    def test_ushape_no_task_instruction(self):
+        """General task type has empty instruction — should not break."""
+        prompt = build_system_prompt(self._make_profile(), self._make_competence(), "general")
+        assert "software development" in prompt.lower()
+        assert "Expert in:" in prompt
+
+    def test_ushape_empty_fragments_list(self):
+        """Empty fragments list should produce minimal prompt."""
+        prompt = build_system_prompt(
+            self._make_profile(),
+            self._make_competence(),
+            "debugging",
+            profile_fragments=[],
+        )
+        # No profile fragments, but task instruction and competence should be there
+        assert "root cause" in prompt.lower()
+        assert "Expert in:" in prompt
+        assert "software development" not in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
+# Conditional Personalization
+# ---------------------------------------------------------------------------
+
+
+class TestConditionalPrompt:
+    """Verify personalize parameter on build_system_prompt."""
+
+    def _make_profile(self):
+        from src.core.personal_profile import TopicWeight
+
+        return PersonalProfile(
+            domain="software_development",
+            domain_confidence=0.9,
+            top_topics=[TopicWeight("python", 0.8)],
+            patterns=["Use Python with FastAPI"],
+            style=StyleProfile(language="en"),
+        )
+
+    def _make_competence(self):
+        return CompetenceMap(topics=[CompetenceEntry(topic="python", score=0.9, level="Expert")])
+
+    def test_personalize_true_includes_profile_and_competence(self):
+        prompt = build_system_prompt(
+            self._make_profile(), self._make_competence(), "debugging", personalize=True
+        )
+        assert "software development" in prompt.lower()
+        assert "Expert in:" in prompt
+
+    def test_personalize_false_task_instruction_only(self):
+        prompt = build_system_prompt(
+            self._make_profile(), self._make_competence(), "debugging", personalize=False
+        )
+        assert "root cause" in prompt.lower()
+        assert "software development" not in prompt.lower()
+        assert "Expert in:" not in prompt
+
+    def test_personalize_false_general_fallback(self):
+        prompt = build_system_prompt(
+            self._make_profile(), self._make_competence(), "general", personalize=False
+        )
+        assert prompt == "You are a general-purpose assistant."
+
+    def test_personalize_false_debugging_has_instruction(self):
+        prompt = build_system_prompt(
+            self._make_profile(), self._make_competence(), "debugging", personalize=False
+        )
+        assert prompt.startswith("Task: debugging.")
+
+    def test_personalize_true_with_fragments_still_works(self):
+        prompt = build_system_prompt(
+            self._make_profile(),
+            self._make_competence(),
+            "explanation",
+            profile_fragments=["identity"],
+            personalize=True,
+        )
+        assert "software development" in prompt.lower()
+        assert "Expert in:" in prompt
+
+    def test_default_personalize_true_backward_compat(self):
+        prompt = build_system_prompt(self._make_profile(), self._make_competence(), "debugging")
+        assert "software development" in prompt.lower()
+        assert "Expert in:" in prompt
+
+
+# ---------------------------------------------------------------------------
+# PersonalProfile.to_fragment
+# ---------------------------------------------------------------------------
+
+
+class TestProfileFragment:
+    """Verify PersonalProfile.to_fragment returns correct fragments."""
+
+    def _make_profile(self):
+        from src.core.personal_profile import TopicWeight
+
+        return PersonalProfile(
+            domain="software_development",
+            domain_confidence=0.9,
+            top_topics=[TopicWeight("python", 0.8), TopicWeight("docker", 0.6)],
+            patterns=["Use Python with FastAPI", "Prefer async patterns"],
+            task_types_detected=["debugging", "code_review"],
+            style=StyleProfile(formality=0.8, verbosity=0.2, language="es"),
+        )
+
+    def test_identity_fragment(self):
+        frag = self._make_profile().to_fragment("identity")
+        assert "software development" in frag.lower()
+        assert "es" in frag  # language
+
+    def test_identity_unknown_domain(self):
+        profile = PersonalProfile(domain="unknown")
+        frag = profile.to_fragment("identity")
+        assert "general-purpose" in frag
+
+    def test_tech_stack_fragment(self):
+        frag = self._make_profile().to_fragment("tech_stack")
+        assert "python" in frag.lower()
+        assert "docker" in frag.lower()
+
+    def test_tech_stack_empty(self):
+        profile = PersonalProfile()
+        assert profile.to_fragment("tech_stack") == ""
+
+    def test_patterns_fragment(self):
+        frag = self._make_profile().to_fragment("patterns")
+        assert "FastAPI" in frag
+        assert "async" in frag
+
+    def test_patterns_empty(self):
+        profile = PersonalProfile()
+        assert profile.to_fragment("patterns") == ""
+
+    def test_projects_fragment(self):
+        frag = self._make_profile().to_fragment("projects")
+        assert "debugging" in frag
+        assert "code_review" in frag
+
+    def test_style_fragment_formal(self):
+        frag = self._make_profile().to_fragment("style")
+        assert "formal" in frag.lower()
+        assert "concise" in frag.lower()
+
+    def test_style_fragment_casual(self):
+        profile = PersonalProfile(style=StyleProfile(formality=0.1, verbosity=0.9))
+        frag = profile.to_fragment("style")
+        assert "casual" in frag.lower()
+        assert "detailed" in frag.lower()
+
+    def test_style_fragment_neutral(self):
+        profile = PersonalProfile(style=StyleProfile(formality=0.5, verbosity=0.5))
+        assert profile.to_fragment("style") == ""
+
+    def test_decisions_fragment_empty(self):
+        assert self._make_profile().to_fragment("decisions") == ""
+
+    def test_unknown_fragment_empty(self):
+        assert self._make_profile().to_fragment("nonexistent") == ""
+
+
+# ---------------------------------------------------------------------------
+# Task Profile Fragments map
+# ---------------------------------------------------------------------------
+
+
+class TestTaskProfileFragments:
+    """Verify TASK_PROFILE_FRAGMENTS and its integration with build_system_prompt."""
+
+    def test_all_task_types_have_fragments(self):
+        from src.core.task_router import TASK_PROFILE_FRAGMENTS, TASK_STRATEGIES
+
+        for task_type in TASK_STRATEGIES:
+            assert task_type in TASK_PROFILE_FRAGMENTS, f"Missing fragments for {task_type}"
+
+    def test_all_fragments_are_valid(self):
+        from src.core.context_map import VALID_FRAGMENTS
+        from src.core.task_router import TASK_PROFILE_FRAGMENTS
+
+        for task_type, fragments in TASK_PROFILE_FRAGMENTS.items():
+            for frag in fragments:
+                assert frag in VALID_FRAGMENTS, f"Invalid fragment '{frag}' in {task_type}"
+
+    def test_general_is_minimal(self):
+        from src.core.task_router import TASK_PROFILE_FRAGMENTS
+
+        assert TASK_PROFILE_FRAGMENTS["general"] == ["identity"]
+
+    def test_debugging_includes_patterns(self):
+        from src.core.task_router import TASK_PROFILE_FRAGMENTS
+
+        frags = TASK_PROFILE_FRAGMENTS["debugging"]
+        assert "identity" in frags
+        assert "tech_stack" in frags
+        assert "patterns" in frags
+
+    def test_architecture_includes_projects(self):
+        from src.core.task_router import TASK_PROFILE_FRAGMENTS
+
+        frags = TASK_PROFILE_FRAGMENTS["architecture"]
+        assert "projects" in frags
+
+    def test_build_system_prompt_uses_fragment_map(self):
+        """When no explicit fragments, build_system_prompt uses TASK_PROFILE_FRAGMENTS."""
+        from src.core.personal_profile import TopicWeight
+
+        profile = PersonalProfile(
+            domain="software_development",
+            domain_confidence=0.9,
+            top_topics=[TopicWeight("python", 0.8)],
+            patterns=["Use pytest for testing"],
+            task_types_detected=["debugging"],
+            style=StyleProfile(language="en"),
+        )
+        comp = CompetenceMap(topics=[CompetenceEntry(topic="python", score=0.9, level="Expert")])
+
+        # general → only identity fragment → no patterns, no tech_stack
+        prompt_general = build_system_prompt(profile, comp, "general")
+        assert "pytest" not in prompt_general
+        assert "Tech focus:" not in prompt_general
+
+        # debugging → identity + tech_stack + patterns
+        prompt_debug = build_system_prompt(profile, comp, "debugging")
+        assert "pytest" in prompt_debug
+        assert "Tech focus:" in prompt_debug
+
+    def test_explicit_fragments_override_map(self):
+        """Explicit profile_fragments should override TASK_PROFILE_FRAGMENTS."""
+        from src.core.personal_profile import TopicWeight
+
+        profile = PersonalProfile(
+            domain="software_development",
+            domain_confidence=0.9,
+            top_topics=[TopicWeight("python", 0.8)],
+            patterns=["Use pytest"],
+        )
+        comp = CompetenceMap(topics=[CompetenceEntry(topic="python", score=0.9, level="Expert")])
+
+        # debugging normally includes patterns, but explicit override to identity only
+        prompt = build_system_prompt(profile, comp, "debugging", profile_fragments=["identity"])
+        assert "pytest" not in prompt
+        assert "software development" in prompt.lower()

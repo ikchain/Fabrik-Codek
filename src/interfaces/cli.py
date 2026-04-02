@@ -322,16 +322,30 @@ def ask(
         else:
             decision = await router.route(prompt)
 
+            # Context Gate — conditional personalization
+            from src.core.context_gate import ContextGate
+
+            gate = ContextGate(enabled=settings.context_gate_enabled)
+            gate_decision = gate.evaluate(prompt, decision)
+            decision.gate_decision = gate_decision
+
+            # Rebuild prompt: personalize only when gate injects
+            decision.system_prompt = build_system_prompt(
+                active_profile, competence_map, decision.task_type,
+                personalize=gate_decision.inject,
+            )
+
             console.print(
                 f"[dim]Router: {decision.task_type} "
                 f"({decision.classification_method}) "
                 f"| topic={decision.topic or '—'} "
                 f"| competence={decision.competence_level} "
-                f"| model={decision.model}[/dim]"
+                f"| model={decision.model} "
+                f"| gate={'inject' if gate_decision.inject else 'skip'}[/dim]"
             )
 
         # Inject hybrid RAG context (vector + graph)
-        if use_graph:
+        if use_graph and getattr(decision, 'gate_decision', None) and decision.gate_decision.inject:
             from src.knowledge.hybrid_rag import HybridRAGEngine
 
             async with HybridRAGEngine() as hybrid:

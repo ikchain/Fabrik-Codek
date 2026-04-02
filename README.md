@@ -4,7 +4,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests: 1136](https://img.shields.io/badge/tests-1136%20passing-brightgreen.svg)]()
+[![Tests: 1167](https://img.shields.io/badge/tests-1167%20passing-brightgreen.svg)]()
 
 > A 7B model that knows you is worth more than a 400B that doesn't.
 
@@ -149,6 +149,7 @@ Every interaction feeds back into the system. The more you use it, the better it
 - **Adaptive Retrieval** — Confidence-based stopping: fetches up to `max_k` results but returns only what's needed, with per-task thresholds
 - **Outcome Tracking** — Infers response quality from conversational patterns (topic changes, reformulations, negation) without manual feedback
 - **Strategy Optimizer** — Thompson Sampling (Multi-Armed Bandit) selects optimal retrieval strategy per task/topic. Falls back to static overrides when insufficient data
+- **Conditional Personalization** — Profile and competence fragments are only injected when the Context Gate says inject. Gate skip = bare task instruction (B1-equivalent), eliminating the personalization paradox where context degrades generic task quality
 - **Context Gate** — Heuristic gate that decides *whether* to inject context at all. Uses entity density, competence level, and task type signals. Prevents RAG contamination for simple queries
 - **Context Map** — Deterministic routing bypass for predictable queries (greetings, definitions, comparisons). Skips the full pipeline when the answer doesn't need retrieval. Inspired by [Savia](https://github.com/gonzalezpazmonica/pm-workspace)'s context engineering approach
 - **Profile Fragmentation** — Instead of injecting the full profile, loads only relevant fragments (identity, tech_stack, patterns, projects, style) per task type. Reduces prompt noise
@@ -482,7 +483,7 @@ fabrik-codek/
 │   │   └── extraction/     # Heuristic, LLM, Transcript extractors + Pipeline
 │   ├── flywheel/           # Collector, Session Observer, Outcome Tracker
 │   └── tools/              # Code analysis tools
-├── tests/                  # 1136 tests
+├── tests/                  # 1167 tests
 ├── scripts/                # Setup, benchmarks, enrichment
 ├── data/                   # Local data storage
 ├── prompts/                # Prompt templates

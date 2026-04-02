@@ -533,6 +533,7 @@ def build_system_prompt(
     competence_map: CompetenceMap,
     task_type: str,
     profile_fragments: list[str] | None = None,
+    personalize: bool = True,
 ) -> str:
     """Build a U-Shape system prompt: task + profile + competence.
 
@@ -541,6 +542,8 @@ def build_system_prompt(
       - Beginning (high attention): task instruction (what to do)
       - Middle (lower attention): profile identity (who the user is)
       - End (high attention): competence level (constraints/expertise)
+
+    When *personalize* is False, returns task instruction only (B1-equivalent).
 
     When *profile_fragments* is provided (from ContextMap),
     only those fragments are loaded instead of the full profile.
@@ -553,6 +556,9 @@ def build_system_prompt(
     instruction = TASK_INSTRUCTIONS.get(task_type, "")
     if instruction:
         parts.append(f"Task: {task_type}. {instruction}")
+
+    if not personalize:
+        return " ".join(parts) if parts else "You are a general-purpose assistant."
 
     # Middle: Personal profile (lower attention — supportive context)
     # Resolve fragments: explicit > task-type map > fallback to identity
