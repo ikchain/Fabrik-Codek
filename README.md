@@ -4,7 +4,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests: 1091](https://img.shields.io/badge/tests-1091%20passing-brightgreen.svg)]()
+[![Tests: 1118](https://img.shields.io/badge/tests-1118%20passing-brightgreen.svg)]()
 
 > A 7B model that knows you is worth more than a 400B that doesn't.
 
@@ -156,6 +156,7 @@ Every interaction feeds back into the system. The more you use it, the better it
 - **Context Aging** — Exponential half-life decay on RAG chunks: `score *= 0.5^(age_days / half_life)`. Recent knowledge is weighted higher than stale content
 - **Instincts Protocol** — Emergent behavioral patterns learned from repeated interactions. Patterns have variable confidence that increases with reinforcement and decays without use. Inspired by [Savia](https://github.com/gonzalezpazmonica/pm-workspace)'s synaptic context engineering
 - **Context Compaction** — 3-layer system for long chat sessions: snip-compact (drop middle turns, zero cost), summary-compact (LLM summarizes discarded turns into structured bullets, temp=0), and emergency truncation. Adaptive thresholds per task type — debugging sessions get more history budget than general queries. Keeps small models in their quality-safe input range
+- **Dynamic Config** — Runtime hot-reload for thresholds and feature flags without restart. Priority chain: `FABRIK_DYNAMIC_<NAME>` env var > `dynamic_config.json` file > compiled default. Edit the JSON while the system runs and the next query picks up the new values
 - **Per-Task Token Control** — Each task type has its own `max_tokens` limit (768-1536), preventing verbose generation while allowing depth where needed
 
 ### Interfaces
@@ -481,7 +482,7 @@ fabrik-codek/
 │   │   └── extraction/     # Heuristic, LLM, Transcript extractors + Pipeline
 │   ├── flywheel/           # Collector, Session Observer, Outcome Tracker
 │   └── tools/              # Code analysis tools
-├── tests/                  # 1091 tests
+├── tests/                  # 1118 tests
 ├── scripts/                # Setup, benchmarks, enrichment
 ├── data/                   # Local data storage
 ├── prompts/                # Prompt templates
