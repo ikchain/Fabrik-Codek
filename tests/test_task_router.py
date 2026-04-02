@@ -723,9 +723,92 @@ class TestMABIntegration:
         decision = await router.route("fix this error")
         assert decision.arm_id is None
 
+    @pytest.mark.asyncio
+    async def test_mab_cascade_evolved_applied(self, tmp_path):
+        """Evolved strategies refine MAB-selected strategy (cascade)."""
+        import json
+
+        from src.core.strategy_optimizer import MABStrategyOptimizer
+
+        profile_dir = tmp_path / "profile"
+        profile_dir.mkdir()
+        evolved = {"strategies": {"debugging": {"graph_depth": 5, "vector_weight": 0.99}}}
+        (profile_dir / "evolved_strategies.json").write_text(json.dumps(evolved))
+
+        competence_map = CompetenceMap(topics=[], built_at="")
+        profile = PersonalProfile(domain="", patterns=[])
+        settings = SimpleNamespace(
+            default_model="test-model",
+            fallback_model="fallback-model",
+            data_dir=tmp_path,
+        )
+        mab = MABStrategyOptimizer(tmp_path)
+        router = TaskRouter(competence_map, profile, settings, mab=mab)
+
+        decision = await router.route("debug this python error")
+        assert decision.arm_id is not None
+        assert decision.strategy.graph_depth == 5
+        assert decision.strategy.vector_weight == 0.99
+
+    @pytest.mark.asyncio
+    async def test_mab_cascade_override_applied(self, tmp_path):
+        """Static overrides correct MAB+evolved strategy (cascade)."""
+        import json
+
+        from src.core.strategy_optimizer import MABStrategyOptimizer
+
+        profile_dir = tmp_path / "profile"
+        profile_dir.mkdir()
+        overrides = {"debugging": {"min_k": 7, "max_k": 12}}
+        (profile_dir / "strategy_overrides.json").write_text(json.dumps(overrides))
+
+        competence_map = CompetenceMap(topics=[], built_at="")
+        profile = PersonalProfile(domain="", patterns=[])
+        settings = SimpleNamespace(
+            default_model="test-model",
+            fallback_model="fallback-model",
+            data_dir=tmp_path,
+        )
+        mab = MABStrategyOptimizer(tmp_path)
+        router = TaskRouter(competence_map, profile, settings, mab=mab)
+
+        decision = await router.route("debug this python error")
+        assert decision.arm_id is not None
+        assert decision.strategy.min_k == 7
+        assert decision.strategy.max_k == 12
+
+    @pytest.mark.asyncio
+    async def test_mab_cascade_full_chain(self, tmp_path):
+        """Full cascade: MAB then evolved then overrides."""
+        import json
+
+        from src.core.strategy_optimizer import MABStrategyOptimizer
+
+        profile_dir = tmp_path / "profile"
+        profile_dir.mkdir()
+        evolved = {"strategies": {"debugging": {"graph_depth": 4, "vector_weight": 0.85}}}
+        (profile_dir / "evolved_strategies.json").write_text(json.dumps(evolved))
+        overrides = {"debugging": {"vector_weight": 0.95}}
+        (profile_dir / "strategy_overrides.json").write_text(json.dumps(overrides))
+
+        competence_map = CompetenceMap(topics=[], built_at="")
+        profile = PersonalProfile(domain="", patterns=[])
+        settings = SimpleNamespace(
+            default_model="test-model",
+            fallback_model="fallback-model",
+            data_dir=tmp_path,
+        )
+        mab = MABStrategyOptimizer(tmp_path)
+        router = TaskRouter(competence_map, profile, settings, mab=mab)
+
+        decision = await router.route("debug this python error")
+        assert decision.arm_id is not None
+        assert decision.strategy.graph_depth == 4
+        assert decision.strategy.vector_weight == 0.95
+
 
 # ---------------------------------------------------------------------------
-# Task 10: Confidence threshold fields (FC-46)
+# Task 10: Confidence threshold fields
 # ---------------------------------------------------------------------------
 
 

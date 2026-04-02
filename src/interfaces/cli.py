@@ -85,6 +85,11 @@ def chat(
             if not system:
                 messages.insert(0, {"role": "system", "content": initial_decision.system_prompt})
 
+            # Compaction thresholds
+            from src.core.compaction import compact_if_needed, get_thresholds
+
+            compaction_thresholds = get_thresholds(initial_decision.task_type)
+
             last_record_id = None
 
             while True:
@@ -107,6 +112,15 @@ def chat(
                     continue
 
                 messages.append({"role": "user", "content": user_input})
+
+                # Compaction check
+                compacted, compact_action = await compact_if_needed(
+                    messages, client, compaction_thresholds
+                )
+                if compact_action:
+                    messages.clear()
+                    messages.extend(compacted)
+                    console.print(f"[dim]Compaction: {compact_action}[/dim]")
 
                 with Progress(
                     SpinnerColumn(),

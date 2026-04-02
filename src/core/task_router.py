@@ -758,49 +758,48 @@ class TaskRouter:
         # 4. Select model (escalate if Novice/Unknown)
         model = get_model(competence_level, self.default_model, self.fallback_model)
 
-        # 5. Get retrieval strategy
+        # 5. Get retrieval strategy — cascade: MAB → evolved → overrides
         arm_id: str | None = None
 
         if self._mab is not None:
-            # MAB Thompson Sampling — highest priority
             arm_id, strategy = self._mab.select_arm(task_type, topic)
         else:
             strategy = get_strategy(task_type)
 
-            # Apply evolved strategies if available
-            evolved = self._evolved_strategies.get(task_type)
-            if evolved:
-                strategy = RetrievalStrategy(
-                    use_rag=strategy.use_rag,
-                    use_graph=strategy.use_graph,
-                    graph_depth=int(evolved.get("graph_depth", strategy.graph_depth)),
-                    vector_weight=evolved.get("vector_weight", strategy.vector_weight),
-                    graph_weight=evolved.get("graph_weight", strategy.graph_weight),
-                    fulltext_weight=evolved.get("fulltext_weight", strategy.fulltext_weight),
-                    confidence_threshold=evolved.get(
-                        "confidence_threshold", strategy.confidence_threshold
-                    ),
-                    min_k=int(evolved.get("min_k", strategy.min_k)),
-                    max_k=int(evolved.get("max_k", strategy.max_k)),
-                )
+        # Apply evolved strategies if available
+        evolved = self._evolved_strategies.get(task_type)
+        if evolved:
+            strategy = RetrievalStrategy(
+                use_rag=strategy.use_rag,
+                use_graph=strategy.use_graph,
+                graph_depth=int(evolved.get("graph_depth", strategy.graph_depth)),
+                vector_weight=evolved.get("vector_weight", strategy.vector_weight),
+                graph_weight=evolved.get("graph_weight", strategy.graph_weight),
+                fulltext_weight=evolved.get("fulltext_weight", strategy.fulltext_weight),
+                confidence_threshold=evolved.get(
+                    "confidence_threshold", strategy.confidence_threshold
+                ),
+                min_k=int(evolved.get("min_k", strategy.min_k)),
+                max_k=int(evolved.get("max_k", strategy.max_k)),
+            )
 
-            # Apply static strategy override if available (fallback)
-            override_key = f"{task_type}_{topic}" if topic else task_type
-            override = self._strategy_overrides.get(override_key)
-            if override:
-                strategy = RetrievalStrategy(
-                    use_rag=strategy.use_rag,
-                    use_graph=strategy.use_graph,
-                    graph_depth=override.get("graph_depth", strategy.graph_depth),
-                    vector_weight=override.get("vector_weight", strategy.vector_weight),
-                    graph_weight=override.get("graph_weight", strategy.graph_weight),
-                    fulltext_weight=override.get("fulltext_weight", strategy.fulltext_weight),
-                    confidence_threshold=override.get(
-                        "confidence_threshold", strategy.confidence_threshold
-                    ),
-                    min_k=override.get("min_k", strategy.min_k),
-                    max_k=override.get("max_k", strategy.max_k),
-                )
+        # Apply static strategy override if available
+        override_key = f"{task_type}_{topic}" if topic else task_type
+        override = self._strategy_overrides.get(override_key)
+        if override:
+            strategy = RetrievalStrategy(
+                use_rag=strategy.use_rag,
+                use_graph=strategy.use_graph,
+                graph_depth=override.get("graph_depth", strategy.graph_depth),
+                vector_weight=override.get("vector_weight", strategy.vector_weight),
+                graph_weight=override.get("graph_weight", strategy.graph_weight),
+                fulltext_weight=override.get("fulltext_weight", strategy.fulltext_weight),
+                confidence_threshold=override.get(
+                    "confidence_threshold", strategy.confidence_threshold
+                ),
+                min_k=override.get("min_k", strategy.min_k),
+                max_k=override.get("max_k", strategy.max_k),
+            )
 
         # 6. Build adapted system prompt
         system_prompt = build_system_prompt(
