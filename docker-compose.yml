@@ -1,0 +1,53 @@
+services:
+  fabrik:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${FABRIK_API_PORT:-8420}:8420"
+    environment:
+      FABRIK_API_HOST: 0.0.0.0
+      FABRIK_API_PORT: 8420
+      FABRIK_DATA_DIR: /app/data
+      FABRIK_DATALAKE_PATH: /app/data
+      FABRIK_OLLAMA_HOST: http://host.docker.internal:11434
+      FABRIK_DEFAULT_MODEL: qwen2.5-coder:7b
+      FABRIK_FALLBACK_MODEL: qwen2.5-coder:7b
+      FABRIK_MEILISEARCH_URL: http://meilisearch:7700
+      FABRIK_MEILISEARCH_KEY: ${FABRIK_MEILISEARCH_KEY:-fabrik-dev-key}
+    volumes:
+      # Default: persist Fabrik data in the project host directory.
+      - ${FABRIK_DATA_PATH:-./data}:/app/data
+      # Alternative: use a Docker-managed named volume instead of the host filesystem.
+      # - fabrik_data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8420/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.15
+    profiles: ["fulltext"]
+    restart: unless-stopped
+    environment:
+      MEILI_MASTER_KEY: ${FABRIK_MEILISEARCH_KEY:-fabrik-dev-key}
+      MEILI_NO_ANALYTICS: "true"
+    ports:
+      - "7700:7700"
+    volumes:
+      - meilisearch_data:/meili_data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7700/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  meilisearch_data:
+  fabrik_data:
