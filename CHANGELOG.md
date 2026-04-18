@@ -5,6 +5,7 @@ All notable changes to Fabrik-Codek are documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Related Work section in README** — Reference to CASK benchmark (Kaggle × Google DeepMind *Measuring AGI* hackathon, 2026). Evaluation of 17 frontier LLMs on context sensitivity and metacognitive calibration. Links to writeup and notebook on Kaggle.
 - **Thompson Sampling Strategy Optimizer** — Multi-Armed Bandit for retrieval strategy selection
   - 4 discrete arms: default, graph_boost, deep_graph, vector_focus
   - Beta distributions updated with outcome feedback (accepted/rejected)
