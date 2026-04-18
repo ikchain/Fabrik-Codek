@@ -514,6 +514,11 @@ python scripts/run_eval_benchmark.py --compare "qwen2.5-coder:7b,qwen2.5-coder:1
 4. Ensure all tests pass (`pytest`)
 5. Submit a pull request
 
+## Related Work
+
+- **CASK Benchmark** — *Context-Aware Sensitivity to Knowledge*. Evaluation of 17 frontier LLMs on context sensitivity and metacognitive calibration, submitted to the Kaggle × Google DeepMind *Measuring AGI* hackathon (2026). Central findings: 11/17 models show zero expressed metacognitive variance under adversarial context; one model exhibits 90.5% recalibration-on-wrong rate despite accuracy collapse. Validated with Brier score (ρ = 0.995 vs ECE).
+  - [Writeup](https://www.kaggle.com/competitions/kaggle-measuring-agi/writeups/cask-does-your-model-know-when-to-trust-its-conte) · [Notebook](https://www.kaggle.com/code/darovalos/cask-17-models-metacognition-benchmark)
+
 ## Acknowledgments
 
 Three features in Fabrik-Codek were inspired by **[Savia](https://github.com/gonzalezpazmonica/pm-workspace)** by [Monica González Paz](https://github.com/gonzalezpazmonica) — a cognitive context engineering system that implements synaptic protocols, spreading activation, and chunking-based memory:
