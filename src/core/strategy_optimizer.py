@@ -16,6 +16,7 @@ from typing import Any
 import structlog
 
 from src.core.task_router import TASK_STRATEGIES, RetrievalStrategy
+from src.utils.io import atomic_write_json
 
 logger = structlog.get_logger()
 
@@ -123,9 +124,7 @@ class MABStrategyOptimizer:
         """Persist MAB state to disk (only if dirty)."""
         if not self._dirty:
             return
-        self._state_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._state_path.open("w", encoding="utf-8") as fh:
-            json.dump(self._state, fh, indent=2, ensure_ascii=False)
+        atomic_write_json(self._state_path, self._state)
         self._dirty = False
         logger.info("mab_state_saved", contexts=len(self._state), path=str(self._state_path))
 
@@ -242,8 +241,6 @@ class MABStrategyOptimizer:
         Backward-compatible with old StrategyOptimizer.save_overrides().
         """
         overrides = self.export_overrides()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with output_path.open("w", encoding="utf-8") as fh:
-            json.dump(overrides, fh, indent=2, ensure_ascii=False)
+        atomic_write_json(output_path, overrides)
         logger.info("strategy_overrides_exported", count=len(overrides), path=str(output_path))
         return len(overrides)

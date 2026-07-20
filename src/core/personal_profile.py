@@ -7,12 +7,14 @@ Works for any profession: developer, lawyer, doctor, etc.
 import json
 import os
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import structlog
+
+from src.utils.time import ensure_aware, now_utc
 
 logger = structlog.get_logger()
 
@@ -144,7 +146,7 @@ class TopicWeight:
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary."""
-        return {"topic": self.topic, "weight": self.weight}
+        return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TopicWeight":
@@ -162,11 +164,7 @@ class StyleProfile:
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary."""
-        return {
-            "formality": self.formality,
-            "verbosity": self.verbosity,
-            "language": self.language,
-        }
+        return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "StyleProfile":
@@ -193,7 +191,7 @@ class PersonalProfile:
     patterns: list[str] = field(default_factory=list)
     task_types_detected: list[str] = field(default_factory=list)
     total_entries: int = 0
-    built_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    built_at: str = field(default_factory=lambda: now_utc().isoformat())
     last_build_timestamp: str | None = None
     build_mode: str = "full"
     drift_history: list[dict] = field(default_factory=list)
@@ -227,7 +225,7 @@ class PersonalProfile:
             patterns=data.get("patterns", []),
             task_types_detected=data.get("task_types_detected", []),
             total_entries=data.get("total_entries", 0),
-            built_at=data.get("built_at", datetime.now().isoformat()),
+            built_at=data.get("built_at", now_utc().isoformat()),
             last_build_timestamp=data.get("last_build_timestamp"),
             build_mode=data.get("build_mode", "full"),
             drift_history=data.get("drift_history", []),
@@ -260,15 +258,15 @@ class PersonalProfile:
         return " ".join(parts)
 
     def to_fragment(self, name: str) -> str:
-        """Return a specific profile fragment by name.
+        """Return a specific profile fragment by name (FC-57).
 
         Fragments:
-          identity   -- domain + language
-          tech_stack -- top topics (technologies)
-          patterns   -- coding patterns / actionable instructions
-          projects   -- task types detected (proxy for active projects)
-          decisions  -- empty (reserved for future use)
-          style      -- formality + verbosity
+          identity   — domain + language
+          tech_stack — top topics (technologies)
+          patterns   — coding patterns / actionable instructions
+          projects   — task types detected (proxy for active projects)
+          decisions  — empty (reserved for future use)
+          style      — formality + verbosity
         """
         if name == "identity":
             if self.domain == "unknown" or self.domain_confidence < 0.1:
@@ -501,7 +499,7 @@ class DatalakeAnalyzer:
             }
 
         since_ts = datetime.fromisoformat(since).timestamp() if since else None
-        since_dt = datetime.fromisoformat(since) if since else None
+        since_dt = ensure_aware(datetime.fromisoformat(since)) if since else None
 
         for jsonl_file in sorted(ac_dir.glob("*auto-captures*.jsonl")):
             if since_ts is not None:
@@ -515,7 +513,7 @@ class DatalakeAnalyzer:
                     record_ts = record.get("timestamp")
                     if record_ts:
                         try:
-                            if datetime.fromisoformat(record_ts) < since_dt:
+                            if ensure_aware(datetime.fromisoformat(record_ts)) < since_dt:
                                 continue
                         except (ValueError, TypeError):
                             pass
@@ -810,7 +808,7 @@ class ProfileBuilder:
         if existing.last_build_timestamp is None:
             logger.info("incremental_fallback_full", reason="no_prior_build")
             profile = self.build(output_path=output_path)
-            profile.last_build_timestamp = datetime.now().isoformat()
+            profile.last_build_timestamp = now_utc().isoformat()
             profile.build_mode = "full"
             save_profile(profile, output_path)
             return profile
@@ -859,7 +857,7 @@ class ProfileBuilder:
         if drift_detected:
             drift_history.append(
                 {
-                    "date": datetime.now().strftime("%Y-%m-%d"),
+                    "date": now_utc().strftime("%Y-%m-%d"),
                     "topics_drifted": topics_drifted,
                     "magnitude": round(distance, 4),
                 }
@@ -873,7 +871,7 @@ class ProfileBuilder:
             patterns=merged_patterns,
             task_types_detected=merged_task_types[:10],
             total_entries=existing.total_entries + new_entries,
-            last_build_timestamp=datetime.now().isoformat(),
+            last_build_timestamp=now_utc().isoformat(),
             build_mode="incremental",
             drift_history=drift_history,
             replay_buffer=replay_buffer,
@@ -977,7 +975,7 @@ class ProfileBuilder:
                     "category": cat,
                     "count": count,
                     "novelty_score": novelty,
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": now_utc().isoformat(),
                 }
             )
 
@@ -986,15 +984,16 @@ class ProfileBuilder:
         return scored[:max_size]
 
 
-# Simple cache to avoid re-reading profile on every LLM call
-_profile_cache: dict[str, PersonalProfile] = {}
+# Cache keyed by path → (mtime, value). Re-reads only when the file changes on
+# disk (FC-93), so `fabrik profile build` is picked up without a restart.
+_profile_cache: dict[str, tuple[float, PersonalProfile]] = {}
 
 
 def get_active_profile(profile_path: Path | None = None) -> PersonalProfile:
-    """Get the active profile, with simple caching.
+    """Get the active profile, cached and invalidated by file mtime.
 
-    Loads and caches the profile so repeated LLM calls don't re-read
-    from disk. Pass a specific path or use the default location.
+    Repeated calls don't re-read from disk, but a rebuilt personal_profile.json
+    is reloaded automatically (mtime change). Pass a path or use the default.
     """
     from src.config import settings
 
@@ -1005,9 +1004,15 @@ def get_active_profile(profile_path: Path | None = None) -> PersonalProfile:
     )
     cache_key = str(path)
 
-    if cache_key in _profile_cache:
-        return _profile_cache[cache_key]
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = -1.0  # missing/unreadable — reload when it appears
+
+    cached = _profile_cache.get(cache_key)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
 
     profile = load_profile(path)
-    _profile_cache[cache_key] = profile
+    _profile_cache[cache_key] = (mtime, profile)
     return profile

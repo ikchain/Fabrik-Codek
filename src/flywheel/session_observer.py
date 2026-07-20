@@ -10,12 +10,14 @@ Uso:
 """
 
 import asyncio
-import hashlib
 import json
 import logging
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
+
+from src.utils.hashing import hash_id
+from src.utils.io import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +183,9 @@ def process_session(session_file: Path, min_quality: float = 0.4) -> list[dict]:
 
         # Create training pair
         training_pair = {
-            "id": hashlib.md5(f"{instruction[:100]}{output[:100]}".encode()).hexdigest()[:12],
+            # FC-94: SHA256[:16] (64-bit). Legacy MD5 ids in older files are left
+            # as-is — this output is append-only, old ids are never re-looked-up.
+            "id": hash_id(f"{instruction[:100]}{output[:100]}"),
             "instruction": instruction,
             "input": "",  # Context could go here
             "output": output,
@@ -245,9 +249,8 @@ def process_all_sessions(min_quality: float = 0.4) -> dict:
         output_file = (
             TRAINING_OUTPUT / f"claude-sessions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
         )
-        with open(output_file, "w", encoding="utf-8") as f:
-            for pair in all_pairs:
-                f.write(json.dumps(pair, ensure_ascii=False) + "\n")
+        lines = "".join(json.dumps(pair, ensure_ascii=False) + "\n" for pair in all_pairs)
+        atomic_write_text(output_file, lines)
 
         stats["output_file"] = str(output_file)
 

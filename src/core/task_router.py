@@ -235,8 +235,8 @@ class RoutingDecision:
     strategy: RetrievalStrategy
     system_prompt: str
     classification_method: str  # "learned", "keyword", or "llm"
-    arm_id: str | None = None  # MAB arm ID, None if no MAB
-    gate_decision: Any = None  # Context Gate decision
+    arm_id: str | None = None  # MAB arm ID (FC-42), None if no MAB
+    gate_decision: Any = None  # Context Gate decision (FC-56)
 
 
 # ---------------------------------------------------------------------------
@@ -474,8 +474,8 @@ TASK_INSTRUCTIONS: dict[str, str] = {
     "general": "",
 }
 
-# Profile fragment map per task type.
-# Load only relevant profile fragments instead of the full profile.
+# Profile fragment map per task type (FC-58).
+# Inspired by Savia's context-map: load only relevant profile fragments.
 TASK_PROFILE_FRAGMENTS: dict[str, list[str]] = {
     "debugging": ["identity", "tech_stack", "patterns"],
     "code_review": ["identity", "tech_stack", "patterns"],
@@ -516,8 +516,8 @@ def get_model(
 ) -> str:
     """Select model based on competence level.
 
-    Always returns default_model. Escalation to fallback disabled
-    because the fine-tuned 7B outperforms the base 14B on benchmarks
+    FC-54: Always returns default_model. Escalation to fallback disabled
+    because the fine-tuned 7B outperforms the base 14B on our benchmarks
     (personalization paradox fix).
     """
     return default_model
@@ -535,7 +535,7 @@ def build_system_prompt(
     profile_fragments: list[str] | None = None,
     personalize: bool = True,
 ) -> str:
-    """Build a U-Shape system prompt: task + profile + competence.
+    """Build a U-Shape system prompt: task + profile + competence (FC-60).
 
     Liu et al. (2024) "Lost in the Middle" shows LLMs attend best to
     the beginning and end of context. We place:
@@ -544,11 +544,12 @@ def build_system_prompt(
       - End (high attention): competence level (constraints/expertise)
 
     When *personalize* is False, returns task instruction only (B1-equivalent).
+    Profile and competence fragments are omitted.
 
-    When *profile_fragments* is provided (from ContextMap),
+    When *profile_fragments* is provided (from ContextMap, FC-57),
     only those fragments are loaded instead of the full profile.
     When *profile_fragments* is None, uses TASK_PROFILE_FRAGMENTS
-    to select fragments by task type.
+    to select fragments by task type (FC-58).
     """
     parts: list[str] = []
 
@@ -705,7 +706,7 @@ class TaskRouter:
 
     @staticmethod
     def _load_evolved_strategies(settings: Any) -> dict:
-        """Load evolved strategies from data/profile/evolved_strategies.json."""
+        """Load evolved strategies from data/profile/evolved_strategies.json (FC-57)."""
         data_dir = getattr(settings, "data_dir", None)
         if data_dir is None:
             return {}
@@ -764,15 +765,17 @@ class TaskRouter:
         # 4. Select model (escalate if Novice/Unknown)
         model = get_model(competence_level, self.default_model, self.fallback_model)
 
-        # 5. Get retrieval strategy — cascade: MAB → evolved → overrides
+        # 5. Get retrieval strategy — cascade: MAB → evolved → overrides (FC-83)
         arm_id: str | None = None
+        mab_strategy: RetrievalStrategy | None = None
 
         if self._mab is not None:
             arm_id, strategy = self._mab.select_arm(task_type, topic)
+            mab_strategy = strategy
         else:
             strategy = get_strategy(task_type)
 
-        # Apply evolved strategies if available
+        # Apply evolved strategies if available (FC-57)
         evolved = self._evolved_strategies.get(task_type)
         if evolved:
             strategy = RetrievalStrategy(
@@ -789,7 +792,7 @@ class TaskRouter:
                 max_k=int(evolved.get("max_k", strategy.max_k)),
             )
 
-        # Apply static strategy override if available
+        # Apply static strategy override if available (FC-38)
         override_key = f"{task_type}_{topic}" if topic else task_type
         override = self._strategy_overrides.get(override_key)
         if override:
@@ -806,6 +809,12 @@ class TaskRouter:
                 min_k=override.get("min_k", strategy.min_k),
                 max_k=override.get("max_k", strategy.max_k),
             )
+
+        # FC-91: only reward the MAB arm if its strategy was executed unchanged.
+        # If evolved/overrides modified it, the outcome is off-policy — drop arm_id
+        # so Thompson Sampling isn't updated with feedback from a different strategy.
+        if arm_id is not None and strategy != mab_strategy:
+            arm_id = None
 
         # 6. Build adapted system prompt
         system_prompt = build_system_prompt(

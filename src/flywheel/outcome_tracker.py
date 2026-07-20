@@ -301,8 +301,20 @@ class OutcomeTracker:
         return record
 
     def _persist(self, record: OutcomeRecord) -> None:
-        """Append a single record as one JSON line to today's JSONL file."""
+        """Append a single record as one JSON line to today's JSONL file.
+
+        Graceful degradation on OSError (e.g. NTFS read-only mount): the chat
+        session must not crash because the datalake is temporarily unwritable.
+        """
         today = datetime.now().strftime("%Y-%m-%d")
         filepath = self._output_dir / f"{today}_outcomes.jsonl"
-        with filepath.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
+        try:
+            with filepath.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
+        except OSError as exc:
+            logger.warning(
+                "outcome_persist_failed",
+                error=str(exc),
+                filepath=str(filepath),
+                outcome=record.outcome,
+            )

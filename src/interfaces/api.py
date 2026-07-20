@@ -222,9 +222,13 @@ async def lifespan(app: FastAPI):
         profile = get_active_profile()
         competence_map = get_active_competence_map()
         learned = load_learned_classifier(settings)
+        app.state.profile = profile
+        app.state.competence_map = competence_map
         app.state.router = TaskRouter(competence_map, profile, settings, learned_classifier=learned)
     except Exception as exc:
         logger.warning("task_router_init_failed", error=str(exc))
+        app.state.profile = None
+        app.state.competence_map = None
         app.state.router = None
 
     logger.info(
@@ -310,10 +314,9 @@ async def _ensure_ollama(state) -> None:
     now = time.monotonic()
     checked_at = getattr(state, "ollama_checked_at", 0.0)
 
-    if state.ollama_ok:
-        return
-
-    # Only re-check if TTL has expired
+    # Re-probe once the cached result is older than the TTL — whether it was UP
+    # or DOWN. (FC-96: a startup ollama_ok=True must not stay positive forever
+    # if Ollama crashes post-startup.)
     if now - checked_at >= _OLLAMA_HEALTH_TTL:
         state.ollama_ok = await state.llm.health_check()
         state.ollama_checked_at = now
@@ -356,7 +359,7 @@ async def ask(req: AskRequest, request: Request):
     state = request.app.state
     await _ensure_ollama(state)
 
-    # Context-Map determinista — check before full pipeline
+    # Context-Map determinista (FC-57) — check before full pipeline
     from src.core.context_map import ContextMap
 
     context_map_result = None
@@ -418,7 +421,7 @@ async def ask(req: AskRequest, request: Request):
             decision.gate_decision = gate_decision
             inject_context = gate_decision.inject
 
-            # Conditional personalization
+            # Conditional personalization (FC-74)
             from src.core.competence_model import CompetenceMap, get_active_competence_map
             from src.core.personal_profile import PersonalProfile, get_active_profile
             from src.core.task_router import build_system_prompt
@@ -426,7 +429,9 @@ async def ask(req: AskRequest, request: Request):
             api_profile = get_active_profile() or PersonalProfile(domain="", patterns=[])
             api_competence = get_active_competence_map() or CompetenceMap(topics=[], built_at="")
             decision.system_prompt = build_system_prompt(
-                api_profile, api_competence, decision.task_type,
+                api_profile,
+                api_competence,
+                decision.task_type,
                 personalize=gate_decision.inject,
             )
 

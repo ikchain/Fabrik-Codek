@@ -105,9 +105,13 @@ async def lifespan(server: FastMCP):
         profile = get_active_profile()
         competence_map = get_active_competence_map()
         learned = load_learned_classifier(settings)
+        _state["profile"] = profile
+        _state["competence_map"] = competence_map
         _state["router"] = TaskRouter(competence_map, profile, settings, learned_classifier=learned)
     except Exception as exc:
         logger.warning("mcp_router_init_failed", error=str(exc))
+        _state["profile"] = None
+        _state["competence_map"] = None
         _state["router"] = None
 
     logger.info(
@@ -289,7 +293,7 @@ async def fabrik_ask(
     if not ollama_ok:
         return json.dumps({"error": "Ollama is not available"})
 
-    # Context-Map determinista — check before full pipeline
+    # Context-Map determinista (FC-57) — check before full pipeline
     from src.config import settings
     from src.core.context_map import ContextMap
 
@@ -328,7 +332,7 @@ async def fabrik_ask(
             task_type=entry.task_type,
             topic=None,
             competence_level="Mapped",
-            model=model,
+            model=model or settings.default_model,
             strategy=get_strategy(entry.task_type),
             system_prompt=sys_prompt,
             classification_method="context_map",
@@ -352,7 +356,7 @@ async def fabrik_ask(
             decision.gate_decision = gate_decision
             inject_context = gate_decision.inject
 
-            # Conditional personalization
+            # Conditional personalization (FC-74)
             from src.core.competence_model import CompetenceMap, get_active_competence_map
             from src.core.personal_profile import PersonalProfile, get_active_profile
             from src.core.task_router import build_system_prompt
@@ -360,7 +364,9 @@ async def fabrik_ask(
             mcp_profile = get_active_profile() or PersonalProfile(domain="", patterns=[])
             mcp_competence = get_active_competence_map() or CompetenceMap(topics=[], built_at="")
             decision.system_prompt = build_system_prompt(
-                mcp_profile, mcp_competence, decision.task_type,
+                mcp_profile,
+                mcp_competence,
+                decision.task_type,
                 personalize=gate_decision.inject,
             )
 

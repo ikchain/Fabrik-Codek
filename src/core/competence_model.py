@@ -632,23 +632,31 @@ def load_competence_map(path: Path) -> CompetenceMap:
 
 
 # Simple cache to avoid re-reading competence map on every LLM call
-_competence_cache: dict[str, CompetenceMap] = {}
+# Cache keyed by path → (mtime, value). Re-reads only when the file changes on
+# disk (FC-93), so `fabrik competence build` is picked up without a restart.
+_competence_cache: dict[str, tuple[float, CompetenceMap]] = {}
 
 
 def get_active_competence_map(map_path: Path | None = None) -> CompetenceMap:
-    """Get the active competence map, with simple caching.
+    """Get the active competence map, cached and invalidated by file mtime.
 
-    Loads and caches the map so repeated LLM calls don't re-read
-    from disk. Pass a specific path or use the default location.
+    Repeated calls don't re-read from disk, but a rebuilt competence_map.json
+    is reloaded automatically (mtime change). Pass a path or use the default.
     """
     from src.config import settings
 
     path = Path(map_path) if map_path else settings.data_dir / "profile" / "competence_map.json"
     cache_key = str(path)
 
-    if cache_key in _competence_cache:
-        return _competence_cache[cache_key]
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = -1.0  # missing/unreadable — reload when it appears
+
+    cached = _competence_cache.get(cache_key)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
 
     cmap = load_competence_map(path)
-    _competence_cache[cache_key] = cmap
+    _competence_cache[cache_key] = (mtime, cmap)
     return cmap

@@ -1,4 +1,4 @@
-"""Context Gate — decides WHETHER to inject personalization context.
+"""Context Gate — decides WHETHER to inject personalization context (FC-56).
 
 Evaluates heuristic signals to determine if RAG/graph context will help
 or hurt the response. Generic queries with no entity matches skip context
@@ -8,7 +8,6 @@ degrades LLM output quality.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -37,12 +36,12 @@ class ContextGate:
     """Decides whether to inject personalization context for a query.
 
     Uses 4 heuristic signals (no ML):
-      1. Entity density -- no entities -> skip
-      2. Competence level -- Unknown -> skip
-      3. Task type rules -- debugging/code_review/architecture -> always inject
-      4. Topic presence -- no topic detected -> skip vote
+      1. Entity density — no entities → skip
+      2. Competence level — Unknown → skip
+      3. Task type rules — debugging/code_review/architecture → always inject
+      4. Topic presence — no topic detected → skip vote
 
-    Voting: inject_votes vs skip_votes, tie -> inject (conservative).
+    Voting: inject_votes vs skip_votes, tie → inject (conservative).
     """
 
     def __init__(
@@ -115,7 +114,7 @@ class ContextGate:
             inject_votes += 1
             signals["competence_signal"] = "inject"
 
-        # Signal 3: Task type rules -- always_inject is unconditional override
+        # Signal 3: Task type rules — always_inject is unconditional override
         signals["task_type"] = task_type
         if task_type in self.always_inject_tasks:
             signals["task_signal"] = "always_inject"
@@ -146,7 +145,7 @@ class ContextGate:
         signals["inject_votes"] = inject_votes
         signals["skip_votes"] = skip_votes
 
-        # Voting: tie -> inject (conservative)
+        # Voting: tie → inject (conservative)
         inject = inject_votes >= skip_votes
 
         # Confidence: how decisive was the vote

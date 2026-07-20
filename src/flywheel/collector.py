@@ -78,7 +78,7 @@ class InteractionRecord:
 
 @dataclass
 class FeedbackRecord:
-    """Sidecar record for feedback on flushed interactions."""
+    """Sidecar record for feedback on flushed interactions (FC-5)."""
 
     record_id: str
     feedback: Literal["positive", "negative", "neutral"]
@@ -258,7 +258,7 @@ class FlywheelCollector:
         return index
 
     async def _flush(self) -> None:
-        """Flush buffer to disk."""
+        """Flush buffer to disk. Keep the buffer if the write fails (e.g. NTFS ro)."""
         if not self._buffer:
             return
 
@@ -266,10 +266,16 @@ class FlywheelCollector:
         filename = f"interactions_{today}_{self._session_id[:8]}.jsonl"
         filepath = self.data_dir / "interactions" / filename
 
-        async with aiofiles.open(filepath, "a", encoding="utf-8") as f:
-            for record in self._buffer:
-                line = json.dumps(asdict(record), ensure_ascii=False)
-                await f.write(line + "\n")
+        try:
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+            async with aiofiles.open(filepath, "a", encoding="utf-8") as f:
+                for record in self._buffer:
+                    line = json.dumps(asdict(record), ensure_ascii=False)
+                    await f.write(line + "\n")
+        except OSError as exc:
+            # Keep the buffer so the next flush retries instead of silently losing data.
+            logger.warning("flywheel_flush_failed", error=str(exc), file=filename)
+            return
 
         count = len(self._buffer)
         self._buffer.clear()

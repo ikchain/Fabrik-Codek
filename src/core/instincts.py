@@ -1,4 +1,4 @@
-"""Instincts Protocol — emergent behavioral patterns from repeated interactions.
+"""Instincts Protocol — emergent behavioral patterns from repeated interactions (FC-61).
 
 Inspired by Savia's Instincts Protocol: patterns learned from user interactions
 with variable confidence that decays without reinforcement.
@@ -24,6 +24,9 @@ from pathlib import Path
 
 import structlog
 
+from src.utils.io import atomic_write_json
+from src.utils.time import ensure_aware, now_utc
+
 logger = structlog.get_logger()
 
 # Confidence parameters
@@ -39,7 +42,7 @@ DECAY_DAYS = 30  # Days without use before decay kicks in
 
 VALID_CATEGORIES = frozenset({"workflow", "preference", "shortcut", "context", "timing"})
 
-# Auto-creation constants
+# Auto-creation constants (FC-81)
 AUTO_CONFIDENCE = 0.35
 MIN_QUERY_WORDS = 5
 
@@ -54,7 +57,7 @@ class Instinct:
     category: str
     confidence: float = INITIAL_CONFIDENCE
     activations: int = 0
-    created: str = field(default_factory=lambda: datetime.now().isoformat())
+    created: str = field(default_factory=lambda: now_utc().isoformat())
     last_used: str | None = None
     enabled: bool = True
     auto_created: bool = False
@@ -63,12 +66,12 @@ class Instinct:
         """Increase confidence after successful use."""
         self.activations += 1
         self.confidence = min(self.confidence + REINFORCE_DELTA, CONFIDENCE_CEILING)
-        self.last_used = datetime.now().isoformat()
+        self.last_used = now_utc().isoformat()
 
     def penalize(self) -> None:
         """Decrease confidence after failure or negative feedback."""
         self.confidence = max(self.confidence - PENALIZE_DELTA, CONFIDENCE_FLOOR)
-        self.last_used = datetime.now().isoformat()
+        self.last_used = now_utc().isoformat()
 
     def apply_decay(self, now: datetime | None = None) -> bool:
         """Apply time-based decay if unused for DECAY_DAYS.
@@ -79,10 +82,12 @@ class Instinct:
             return False
 
         if now is None:
-            now = datetime.now()
+            now = now_utc()
+        else:
+            now = ensure_aware(now)
 
         try:
-            last = datetime.fromisoformat(self.last_used)
+            last = ensure_aware(datetime.fromisoformat(self.last_used))
         except (ValueError, TypeError):
             return False
 
@@ -100,10 +105,10 @@ class Instinct:
         if not self.last_used:
             return None
         try:
-            last = datetime.fromisoformat(self.last_used)
+            last = ensure_aware(datetime.fromisoformat(self.last_used))
         except (ValueError, TypeError):
             return None
-        return int((datetime.now() - last).total_seconds() / 86400.0)
+        return int((now_utc() - last).total_seconds() / 86400.0)
 
     @property
     def needs_review(self) -> bool:
@@ -133,7 +138,7 @@ class Instinct:
             category=data.get("category", "workflow"),
             confidence=data.get("confidence", INITIAL_CONFIDENCE),
             activations=data.get("activations", 0),
-            created=data.get("created", datetime.now().isoformat()),
+            created=data.get("created", now_utc().isoformat()),
             last_used=data.get("last_used"),
             enabled=data.get("enabled", True),
             auto_created=data.get("auto_created", False),
@@ -258,13 +263,12 @@ class InstinctRegistry:
 
     def _save(self) -> None:
         """Persist instincts to JSON file."""
-        self._path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "version": "1.0.0",
-            "last_updated": datetime.now().strftime("%Y-%m-%d"),
+            "last_updated": now_utc().strftime("%Y-%m-%d"),
             "entries": [i.to_dict() for i in self._instincts.values()],
         }
-        self._path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        atomic_write_json(self._path, data)
 
     def stats(self) -> dict:
         """Return summary statistics."""
@@ -285,7 +289,7 @@ class InstinctRegistry:
 
 
 # ---------------------------------------------------------------------------
-# Session Pattern Tracker — auto-creates instincts from chat patterns
+# Session Pattern Tracker (FC-81) — auto-creates instincts from chat patterns
 # ---------------------------------------------------------------------------
 
 

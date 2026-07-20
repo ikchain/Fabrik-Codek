@@ -88,8 +88,8 @@ class LLMClient:
             "prompt": prompt,
             "stream": False,
             "options": {
-                "temperature": temperature or settings.temperature,
-                "num_predict": max_tokens or settings.max_tokens,
+                "temperature": (temperature if temperature is not None else settings.temperature),
+                "num_predict": (max_tokens if max_tokens is not None else settings.max_tokens),
             },
         }
 
@@ -165,7 +165,7 @@ class LLMClient:
             "messages": messages,
             "stream": False,
             "options": {
-                "temperature": temperature or settings.temperature,
+                "temperature": (temperature if temperature is not None else settings.temperature),
                 "num_predict": settings.max_tokens,
             },
         }

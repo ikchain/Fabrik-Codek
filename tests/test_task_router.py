@@ -472,7 +472,7 @@ class TestTaskRouterIntegration:
         router = self._make_router()
         decision = asyncio.run(router.route("fix the error in postgresql"))
         prompt = decision.system_prompt
-        # U-Shape: task instruction first, profile middle, competence end
+        # U-Shape (FC-60): task instruction first, profile middle, competence end
         assert "root cause" in prompt.lower()  # task instruction
         assert "software development" in prompt.lower()  # profile
         assert "Expert in:" in prompt  # competence
@@ -753,8 +753,10 @@ class TestMABIntegration:
         router = TaskRouter(competence_map, profile, settings, mab=mab)
 
         decision = await router.route("debug this python error")
-        assert decision.arm_id is not None
-        # Evolved values must cascade on top of MAB
+        # FC-91: evolved modified the arm's strategy → off-policy, arm_id dropped
+        # so the bandit isn't rewarded for a strategy it didn't pick.
+        assert decision.arm_id is None
+        # Evolved values must still cascade on top of MAB
         assert decision.strategy.graph_depth == 5
         assert decision.strategy.vector_weight == 0.99
 
@@ -782,7 +784,8 @@ class TestMABIntegration:
         router = TaskRouter(competence_map, profile, settings, mab=mab)
 
         decision = await router.route("debug this python error")
-        assert decision.arm_id is not None
+        # FC-91: override modified the arm's strategy → off-policy, arm_id dropped
+        assert decision.arm_id is None
         assert decision.strategy.min_k == 7
         assert decision.strategy.max_k == 12
 
@@ -811,7 +814,8 @@ class TestMABIntegration:
         router = TaskRouter(competence_map, profile, settings, mab=mab)
 
         decision = await router.route("debug this python error")
-        assert decision.arm_id is not None
+        # FC-91: evolved+override modified the arm's strategy → off-policy, arm_id dropped
+        assert decision.arm_id is None
         # Evolved sets graph_depth=4
         assert decision.strategy.graph_depth == 4
         # Override overwrites vector_weight from evolved 0.85 → 0.95
@@ -1424,12 +1428,12 @@ class TestBuildCorpusGuard:
 
 
 # ---------------------------------------------------------------------------
-# U-Shape Prompt Positioning
+# U-Shape Prompt Positioning (FC-60)
 # ---------------------------------------------------------------------------
 
 
 class TestUShapePrompt:
-    """Verify build_system_prompt follows U-Shape ordering."""
+    """Verify build_system_prompt follows U-Shape ordering (FC-60)."""
 
     def _make_profile(self):
         from src.core.personal_profile import TopicWeight
@@ -1505,7 +1509,7 @@ class TestUShapePrompt:
 
 
 # ---------------------------------------------------------------------------
-# Conditional Personalization
+# Conditional Personalization (FC-74)
 # ---------------------------------------------------------------------------
 
 
@@ -1571,7 +1575,7 @@ class TestConditionalPrompt:
 
 
 # ---------------------------------------------------------------------------
-# PersonalProfile.to_fragment
+# PersonalProfile.to_fragment (FC-57)
 # ---------------------------------------------------------------------------
 
 
@@ -1646,7 +1650,7 @@ class TestProfileFragment:
 
 
 # ---------------------------------------------------------------------------
-# Task Profile Fragments map
+# Task Profile Fragments map (FC-58)
 # ---------------------------------------------------------------------------
 
 

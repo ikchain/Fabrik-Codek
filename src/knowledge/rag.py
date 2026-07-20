@@ -17,7 +17,6 @@ import asyncio
 import hashlib
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -35,11 +34,13 @@ from tenacity import (
 )
 
 from src.config import settings
+from src.knowledge.sql_utils import escape_sql_literal
+from src.utils.time import now_utc
 
 # Configurable via FABRIK_EMBEDDING_DIM env var (default: 768 for nomic-embed-text)
 EMBEDDING_DIM = settings.embedding_dim
 
-# Stop-RAG adaptive retrieval constants
+# Stop-RAG adaptive retrieval constants (FC-46)
 MIN_SIMILARITY_FLOOR: float = 0.2
 DEFAULT_CONFIDENCE_THRESHOLD: float = 0.7
 DEFAULT_MIN_K: int = 1
@@ -127,6 +128,7 @@ class RAGEngine:
     )
     async def _get_embedding(self, text: str) -> list[float]:
         """Get embedding from Ollama."""
+        # Truncate to ~8K chars to stay within nomic-embed-text context window
         # nomic-embed-text context = 8192 tokens; ~2 chars/token avg → cap at 4000 chars
         truncated = text[:4000] if len(text) > 4000 else text
         response = await self._http_client.post(
@@ -140,7 +142,7 @@ class RAGEngine:
         return response.json()["embedding"]
 
     async def _get_embeddings_batch(
-        self, texts: list[str], batch_size: int = 10
+        self, texts: list[str], batch_size: int = 5
     ) -> list[list[float]]:
         """Get embeddings for multiple texts."""
         embeddings = []
@@ -210,7 +212,7 @@ class RAGEngine:
                     source=str(file_path),
                     category=category,
                     project=project,
-                    created_at=datetime.now().isoformat(),
+                    created_at=now_utc().isoformat(),
                 )
             )
 
@@ -257,7 +259,7 @@ class RAGEngine:
                             "source": str(file_path),
                             "category": data.get("category", category),
                             "project": project,
-                            "created_at": datetime.now().isoformat(),
+                            "created_at": now_utc().isoformat(),
                         }
                     )
                     texts.append(text)
@@ -362,7 +364,7 @@ class RAGEngine:
         results = self._table.search(query_embedding).limit(limit)
 
         if category:
-            results = results.where(f"category = '{category}'")
+            results = results.where(f"category = '{escape_sql_literal(category)}'")
 
         results = results.to_list()
 
@@ -412,7 +414,7 @@ class RAGEngine:
         results = self._table.search(query_embedding).limit(max_k)
 
         if category:
-            results = results.where(f"category = '{category}'")
+            results = results.where(f"category = '{escape_sql_literal(category)}'")
 
         results = results.to_list()
 
@@ -548,12 +550,25 @@ Responde usando el contexto anterior cuando sea relevante."""
 
 # Singleton instance
 _rag_engine: RAGEngine | None = None
+# Lazily created (not module-level asyncio.Lock()) so it binds to the running
+# loop, surviving asyncio.run() in tests. Reset alongside _rag_engine.
+_rag_engine_lock: asyncio.Lock | None = None
 
 
 async def get_rag_engine() -> RAGEngine:
-    """Get or create the global RAG engine."""
-    global _rag_engine
-    if _rag_engine is None:
-        _rag_engine = RAGEngine()
-        await _rag_engine._init()
+    """Get or create the global RAG engine (task-safe singleton, FC-97)."""
+    global _rag_engine, _rag_engine_lock
+    if _rag_engine is not None:
+        return _rag_engine
+    if _rag_engine_lock is None:
+        # Synchronous create — atomic between tasks (no await before assignment).
+        _rag_engine_lock = asyncio.Lock()
+    async with _rag_engine_lock:
+        # Double-checked: another task may have finished while we waited.
+        if _rag_engine is None:
+            engine = RAGEngine()
+            await engine._init()
+            # Publish only after _init completes, so concurrent fast-path callers
+            # never observe a half-initialized engine.
+            _rag_engine = engine
     return _rag_engine

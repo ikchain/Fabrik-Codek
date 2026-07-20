@@ -4,7 +4,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import aiofiles
@@ -140,7 +140,7 @@ class DatalakeConnector:
                     datalake=datalake_name,
                     file_type=file_path.suffix.lower(),
                     size=stat.st_size,
-                    modified=datetime.fromtimestamp(stat.st_mtime),
+                    modified=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
                 )
             except (OSError, ValueError) as e:
                 logger.error("file_scan_error", path=str(file_path), error=str(e))

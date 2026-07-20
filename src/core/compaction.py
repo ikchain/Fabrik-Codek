@@ -1,4 +1,4 @@
-"""Context compaction for chat sessions.
+"""Context compaction for chat sessions (FC-79).
 
 3-layer compaction adapted from Claude Code's 6-layer system for 7B models:
   1. snip_compact — drop middle messages, keep system + last N turn pairs (zero cost)
@@ -202,7 +202,6 @@ async def summary_compact(
     messages: list[dict],
     client,
     keep_turns: int = 6,
-    max_summary_tokens: int = 400,
     max_bullets: int = 8,
 ) -> list[dict]:
     """Summarize discarded portion with structured prompt (temp=0).
@@ -290,7 +289,6 @@ async def compact_if_needed(
         messages,
         client,
         keep_turns=t.keep_turns,
-        max_summary_tokens=400,
         max_bullets=t.max_bullets,
     )
 
