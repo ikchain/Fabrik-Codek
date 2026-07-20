@@ -145,7 +145,7 @@ Every interaction feeds back into the system. The more you use it, the better it
 
 - **Personal Profile** — Learns your domain, stack, architecture, and tooling preferences from the datalake. Supports incremental builds with drift detection and EMA merge
 - **Competence Model** — 4 signals (entry count, graph density, recency, outcome rate) with 8 weight sets and adaptive forgetting curves per topic
-- **Adaptive Task Router** — 3-level classification chain: learned TF-IDF classifier, keyword matching, and LLM fallback. Per-task retrieval strategies and model escalation
+- **Adaptive Task Router** — 3-level classification chain: learned TF-IDF classifier, keyword matching, and LLM fallback. Per-task retrieval strategies, single-model routing
 - **Adaptive Retrieval** — Confidence-based stopping: fetches up to `max_k` results but returns only what's needed, with per-task thresholds
 - **Outcome Tracking** — Infers response quality from conversational patterns (topic changes, reformulations, negation) without manual feedback
 - **Strategy Optimizer** — Thompson Sampling (Multi-Armed Bandit) selects optimal retrieval strategy per task/topic. Falls back to static overrides when insufficient data
@@ -171,6 +171,15 @@ Every interaction feeds back into the system. The more you use it, the better it
 - **Session Observer** — Extracts training pairs from Claude Code session transcripts. Includes `watch` mode for continuous monitoring
 - **Quality-Gated Logger** — Rejects low-quality data (reasoning < 100 chars, lessons < 50 chars) to prevent degradation
 - **Auto-Capture** — Hook-based capture of code changes with optional reasoning enrichment
+
+### Reliability & Security
+
+- **SQL injection guard** — LanceDB `.where()` filters are built through an escaping helper; user-derived values can't break out of string literals
+- **Atomic writes** — Full-file persistence (profile, competence, graph, config) writes to a temp file then renames, so a crash or read-only mount never leaves a half-written file
+- **Read-only safe** — Persistence failures (e.g. a read-only data mount) degrade gracefully instead of crashing a chat session
+- **UTC-aware timestamps** — All internal timestamps are timezone-aware, avoiding naive/aware arithmetic bugs across decay, aging, and drift
+- **Stable content IDs** — SHA-256-based identifiers for training pairs and cache keys
+- **Hot cache invalidation** — Profile and competence caches refresh on file mtime, no restart needed
 
 ## Hyper-Personalization Engine
 
@@ -237,7 +246,7 @@ fabrik router test -q "optimize my PostgreSQL query"   # Debug classification
 
 - **7 task types**: debugging, code_review, architecture, explanation, testing, devops, ml_engineering
 - **3-level classification chain**: Learned TF-IDF classifier (trained on accepted outcomes) → keyword matching → LLM fallback
-- **Model escalation**: Expert/Competent topics use default model; Novice/Unknown escalate to fallback
+- **Single-model routing**: all competence levels use the default model — escalation to a larger fallback was disabled after benchmarks showed a well-chosen 7B outperforming it (personalization-paradox fix)
 - **Per-task retrieval**: Different graph_depth, vector/graph weights, and confidence thresholds per task type
 - **3-layer system prompt**: Personal Profile + Competence fragment + task-specific instruction
 
