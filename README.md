@@ -6,13 +6,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Tests: 1167](https://img.shields.io/badge/tests-1167%20passing-brightgreen.svg)]()
 
-> Personalization only helps a small model when it knows when to stay out of the way.
+> A 7B model that knows you is worth more than a 400B that doesn't.
 
 Fabrik-Codek is a **personal cognitive architecture** that runs locally with any Ollama model. It builds a knowledge graph from how you work, profiles your expertise, and adapts its retrieval and response strategy over time — all without sending data anywhere.
 
 It's not just RAG. It's a closed feedback loop: capture your work, extract knowledge, measure competence, route tasks intelligently, observe outcomes, and refine.
 
-**And it's measured.** We ran the ablation on our own pipeline and published what it showed — including the part where personalization made things *worse*. See [The Personalization Paradox](#the-personalization-paradox) below.
+**And it's measured.** We ran the ablation on our own pipeline and published what it showed — including the part where *injecting* context made things worse before we fixed it. See [The Personalization Paradox](#the-personalization-paradox) below.
 
 ## Quick Start
 
@@ -89,7 +89,9 @@ The full study — dual-track evaluation, per-component ablations, and what it i
 
 **[The Personalization Paradox: When Adaptive Context Hurts Small Language Models](https://doi.org/10.5281/zenodo.18818890)** · DOI `10.5281/zenodo.18818890`
 
-> The takeaway generalizes past this project: for a small model, retrieved context is not free. Every irrelevant chunk is adversarial context, and a system that cannot decline to personalize will underperform the model it was built on top of.
+> The takeaway generalizes past this project: for a small model, retrieved context is not free. Every irrelevant chunk is adversarial context, and a system that cannot decline to inject will underperform the model it was built on top of.
+
+**What this study does *not* say.** It measures runtime context injection — RAG, graph expansion, profile fragments — on a benchmark of generic engineering tasks. It says nothing about whether a small model *fine-tuned on your own work* beats a much larger generic one, which is a different claim requiring a different test: one built from questions only your corpus can answer. That benchmark doesn't exist here, so treat the tagline above as the project's thesis, not as one of its results.
 
 ## Architecture
 
@@ -289,7 +291,7 @@ fabrik router test -q "optimize my PostgreSQL query"   # Debug classification
 
 - **7 task types**: debugging, code_review, architecture, explanation, testing, devops, ml_engineering
 - **3-level classification chain**: Learned TF-IDF classifier (trained on accepted outcomes) → keyword matching → LLM fallback
-- **Single-model routing**: all competence levels use the default model — escalation to a larger fallback was disabled after benchmarks showed a well-chosen 7B outperforming it (personalization-paradox fix)
+- **Single-model routing**: all competence levels use the default model. Escalation to a larger fallback was disabled because the ablation showed the competence layer was *subtracting* — removing it scored 0.669 against 0.634 for the full pipeline — and because 34.6% of topics were escalating on every query. We did not benchmark a larger model head-to-head, so this is a decision about the escalation layer, not a claim that a 7B beats a 14B
 - **Per-task retrieval**: Different graph_depth, vector/graph weights, and confidence thresholds per task type
 - **3-layer system prompt**: Personal Profile + Competence fragment + task-specific instruction
 
