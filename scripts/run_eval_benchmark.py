@@ -10,8 +10,9 @@ Usage:
 import argparse
 import json
 import re
-import subprocess
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -20,21 +21,48 @@ BENCHMARK_PATH = Path(__file__).resolve().parent.parent / "data" / "processed" /
 CASES_PATH = BENCHMARK_PATH / "cases"
 RESULTS_PATH = BENCHMARK_PATH / "results"
 
+OLLAMA_URL = "http://localhost:11434/api/generate"
 
-def query_ollama(model: str, prompt: str, timeout: int = 60) -> tuple[str, float]:
-    """Query Ollama model and return response with latency."""
+# Deterministic sampling. `ollama run` accepts no sampling parameters, so it inherits
+# whatever temperature the Modelfile sets — typically 0.7-0.8. That makes a benchmark
+# run irreproducible: the same model over the same cases scores differently each time,
+# and that spread can easily exceed the difference you are trying to measure between
+# two models. Any comparison made that way is measuring the sampler, not the model.
+# Fixing temperature, top_k and seed makes runs repeatable and comparisons meaningful.
+#
+# Sanity check before trusting any A/B: run the SAME model twice. The two scores must
+# be identical. If they are not, you are reading noise.
+DETERMINISTIC_OPTIONS = {"temperature": 0.0, "top_p": 1.0, "top_k": 1, "seed": 42}
+
+
+def query_ollama(
+    model: str, prompt: str, timeout: int = 60, options: dict | None = None
+) -> tuple[str, float]:
+    """Query Ollama and return (response, latency).
+
+    Uses the HTTP API rather than the `ollama run` CLI because the CLI offers no way
+    to pin sampling parameters. See DETERMINISTIC_OPTIONS.
+    """
+    payload = json.dumps(
+        {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {**DETERMINISTIC_OPTIONS, **(options or {})},
+        }
+    ).encode()
+    req = urllib.request.Request(
+        OLLAMA_URL, data=payload, headers={"Content-Type": "application/json"}
+    )
     start = time.time()
     try:
-        result = subprocess.run(
-            ["ollama", "run", model],
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=timeout
-        )
-        latency = time.time() - start
-        return result.stdout.strip(), latency
-    except subprocess.TimeoutExpired:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read())
+        return body.get("response", "").strip(), time.time() - start
+    except (TimeoutError, urllib.error.URLError) as e:
+        # urllib wraps socket timeouts in URLError on some versions
+        if isinstance(e, urllib.error.URLError) and not isinstance(e.reason, TimeoutError):
+            return f"[ERROR: {e}]", time.time() - start
         return "[TIMEOUT]", timeout
     except Exception as e:
         return f"[ERROR: {e}]", time.time() - start
@@ -90,9 +118,9 @@ def evaluate_response(response: str, case: dict) -> dict:
 
     # Calculate weighted score
     raw_score = (
-        correctness_score * criteria["correctness_weight"] +
-        completeness_score * criteria["completeness_weight"] +
-        clarity_score * criteria["clarity_weight"]
+        correctness_score * criteria["correctness_weight"]
+        + completeness_score * criteria["completeness_weight"]
+        + clarity_score * criteria["clarity_weight"]
     )
 
     # Apply violation penalty
@@ -105,7 +133,7 @@ def evaluate_response(response: str, case: dict) -> dict:
         "final_score": round(final_score, 3),
         "included_terms": included,
         "missing_terms": missing,
-        "violations": violations
+        "violations": violations,
     }
 
 
@@ -138,7 +166,7 @@ def run_single_case(model: str, case: dict, verbose: bool = False) -> dict:
         "category": case["category"],
         "difficulty": case["difficulty"],
         "response": response[:500] + "..." if len(response) > 500 else response,
-        "evaluation": evaluation
+        "evaluation": evaluation,
     }
 
 
@@ -172,7 +200,7 @@ def run_benchmark(model: str, category: Optional[str] = None, verbose: bool = Fa
         result = run_single_case(model, case, verbose)
         results.append(result)
 
-    print("\r" + " "*60, end="\r")  # Clear line
+    print("\r" + " " * 60, end="\r")  # Clear line
 
     # Calculate aggregates
     scores_by_category = {}
@@ -202,13 +230,12 @@ def run_benchmark(model: str, category: Optional[str] = None, verbose: bool = Fa
         "overall_score": round(sum(all_scores) / len(all_scores), 3),
         "avg_latency_seconds": round(total_latency / len(cases), 2),
         "by_category": {
-            cat: round(sum(scores) / len(scores), 3)
-            for cat, scores in scores_by_category.items()
+            cat: round(sum(scores) / len(scores), 3) for cat, scores in scores_by_category.items()
         },
         "by_difficulty": {
             diff: round(sum(scores) / len(scores), 3) if scores else 0
             for diff, scores in scores_by_difficulty.items()
-        }
+        },
     }
 
     # Print summary
@@ -224,10 +251,7 @@ def run_benchmark(model: str, category: Optional[str] = None, verbose: bool = Fa
     for diff, score in summary["by_difficulty"].items():
         print(f"  {diff}: {score:.3f}")
 
-    return {
-        "summary": summary,
-        "results": results
-    }
+    return {"summary": summary, "results": results}
 
 
 def save_results(benchmark_results: dict, model: str):

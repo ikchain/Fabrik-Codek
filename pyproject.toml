@@ -1,6 +1,6 @@
 [project]
 name = "fabrik-codek"
-version = "0.1.0"
+version = "1.3.0"
 description = "Local AI dev assistant powered by Qwen - Claude Code's little brother"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -4,6 +4,10 @@ All notable changes to Fabrik-Codek are documented in this file.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [1.3.0] - 2026-08-16
+
 ### Added
 - **Related Work section in README** — Reference to CASK benchmark (Kaggle × Google DeepMind *Measuring AGI* hackathon, 2026). Evaluation of 17 frontier LLMs on context sensitivity and metacognitive calibration. Links to writeup and notebook on Kaggle.
 - **Thompson Sampling Strategy Optimizer** — Multi-Armed Bandit for retrieval strategy selection
@@ -99,7 +103,53 @@ All notable changes to Fabrik-Codek are documented in this file.
 - All CLI messages, prompts, and logger errors translated from Spanish to English
 - `HybridRAGEngine._rrf_fusion()` extended to accept optional fulltext results
 - Multi-source origin tracking: results found in multiple sources tagged as `"hybrid"`
-- Test count: 527 → 1057
+- **Version numbering unified.** The package, the module and this file had drifted apart —
+  `pyproject.toml` said `0.1.0`, `src/__init__.py` (the version the API reports on `/health`
+  and `/status`) said `0.2.0`, and this changelog was still on `1.2.1`. All three now track
+  the same number.
+
+### Security
+- **SQL injection guard for LanceDB filters** — `src/knowledge/sql_utils.py` escapes and
+  validates every value interpolated into a `.where()` clause. String interpolation into
+  those filters was reachable from user-controlled input in both the vector store and the
+  retrieval layer.
+
+### Fixed
+- **Deterministic benchmark runs** — `run_eval_benchmark.py` called the `ollama run` CLI,
+  which accepts no sampling parameters and therefore inherited the Modelfile temperature
+  (typically 0.7–0.8). Benchmark runs were consequently irreproducible: the same model over
+  the same cases scored differently each time, by a margin that can exceed the difference
+  between two models being compared. Now uses the HTTP API with `temperature=0`, `top_k=1`
+  and a fixed seed. Sanity check documented in the module: run the same model twice; the
+  scores must be identical.
+- **`temperature=0` was silently ignored** — `LLMClient` used `temperature or default`,
+  and `0` is falsy, so requests asking for deterministic output got the default instead.
+- **Naive/aware datetime mixing** — `src/utils/time.py` (`now_utc`, `ensure_aware`) applied
+  at every subtraction site in RAG aging, graph decay and instinct decay. Previously these
+  could raise `TypeError` when stored timestamps predated the convention.
+- **Non-atomic writes** — `src/utils/io.py` (`atomic_write_json` / `atomic_write_text`,
+  tempfile + `os.replace` + fsync) for full-file writers, plus a buffer-loss fix in the
+  feedback collector's flush path. An interrupted write could previously truncate state.
+- **Truncated hash IDs** — `src/utils/hashing.py` moves record IDs from truncated MD5 to
+  SHA256, widening the space enough to make collisions a non-issue.
+- **Ollama health check went stale** — an early return bypassed the TTL, so a backend that
+  recovered (or died) after the first probe kept reporting its old state indefinitely.
+- **RAG engine race under concurrency** — `get_rag_engine` is now task-safe via a lazy
+  `asyncio.Lock` with publish-after-init, so concurrent `asyncio.gather` callers cannot
+  observe a half-initialised engine.
+- **MAB reward attribution** — the bandit only records a reward when the strategy actually
+  executed was the one it selected; an evolved strategy or an override overriding it now
+  clears the arm id instead of corrupting the arm's statistics.
+- **Profile and competence caches never invalidated** — both now key off file mtime.
+
+### Documentation
+- **README leads with the Personalization Paradox** — the ablation that showed the full
+  personalization pipeline scoring *below* the raw model, the three causes it isolated,
+  the components built in response, and the post-mitigation result, with limitations
+  stated (single runs, N=50, no confidence intervals). Links the published study.
+- **Reliability & Security section** in the README covering the hardening above.
+- Corrected the routing description: it claimed competence-based escalation to a larger
+  fallback model, which has been disabled since the ablation showed that layer subtracting.
 
 ## [1.2.1] - 2026-02-19
 

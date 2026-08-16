@@ -4,7 +4,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests: 1167](https://img.shields.io/badge/tests-1167%20passing-brightgreen.svg)]()
+[![Tests: 1170](https://img.shields.io/badge/tests-1170%20passing-brightgreen.svg)]()
 
 > A 7B model that knows you is worth more than a 400B that doesn't.
 
