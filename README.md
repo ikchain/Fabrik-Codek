@@ -6,11 +6,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Tests: 1167](https://img.shields.io/badge/tests-1167%20passing-brightgreen.svg)]()
 
-> A 7B model that knows you is worth more than a 400B that doesn't.
+> Personalization only helps a small model when it knows when to stay out of the way.
 
 Fabrik-Codek is a **personal cognitive architecture** that runs locally with any Ollama model. It builds a knowledge graph from how you work, profiles your expertise, and adapts its retrieval and response strategy over time — all without sending data anywhere.
 
 It's not just RAG. It's a closed feedback loop: capture your work, extract knowledge, measure competence, route tasks intelligently, observe outcomes, and refine.
+
+**And it's measured.** We ran the ablation on our own pipeline and published what it showed — including the part where personalization made things *worse*. See [The Personalization Paradox](#the-personalization-paradox) below.
 
 ## Quick Start
 
@@ -47,6 +49,47 @@ Most local AI tools are stateless wrappers around an LLM. Fabrik-Codek is **stat
 | **Keeps knowledge fresh** | Graph Temporal Decay fades stale knowledge; Semantic Drift Detection alerts when contexts shift |
 | **Compacts long sessions** | 3-layer context compaction (snip, summarize, emergency) with adaptive thresholds per task type — keeps 7B models in their quality-safe zone |
 | **Domain-agnostic** | Works for any profession. A lawyer's datalake produces a legal profile. A trader's datalake produces a trading profile |
+
+## The Personalization Paradox
+
+Every RAG project claims it improves answers. We measured ours, and for a while it didn't.
+
+Running the full ablation across 11 configurations on a fine-tuned 7B model produced an uncomfortable result: **the complete personalization pipeline scored worse than the raw model with no context at all.**
+
+| Configuration | Generic tasks | Domain-specific tasks |
+|---------------|---------------|-----------------------|
+| **B1 — raw model, no context** | **0.791** | **0.865** |
+| B3 — hybrid RAG | 0.741 | 0.670 |
+| A3 — everything except graph expansion | 0.738 | 0.861 |
+| **Full pipeline** | **0.634** | **0.649** |
+
+Every layer meant to help was subtracting. The ablation isolated three compounding causes:
+
+1. **Graph expansion was the primary bottleneck.** Neighbour traversal pulled in loosely-related chunks; each one is misleading context to a small model.
+2. **Competence-based model escalation was the secondary one.** A third of topics were escalating to a larger fallback model that scored *worse* than the well-tuned 7B.
+3. **Context volume crowded out the question.** Retrieved chunks were consuming 55–75% of the token budget.
+
+### What we changed
+
+The fixes are all in this repository, and they are the reason the architecture looks the way it does:
+
+- **Context Gate** — a component whose entire job is to decide *not* to inject context. Four heuristic signals vote; on skip, the model gets a bare task instruction and behaves like the B1 baseline.
+- **Relevance filter** — token-overlap scoring drops retrieved chunks below threshold *after* fusion, before they ever reach the prompt.
+- **Graph expansion bounded** — capped neighbours per seed, capped expansion queries, higher minimum edge weight, and retrieval fusion reweighted toward vector search.
+- **Escalation disabled** — `get_model()` returns the default model for every competence level.
+- **Context budget cut** — fewer chunks, shorter chunks.
+
+### Result
+
+The gated pipeline scores **0.782** against the raw baseline's **0.791** — the penalty is essentially gone, while personalization remains available for the queries that benefit from it.
+
+**Honest limitations:** single runs of N=50 cases, no confidence intervals, keyword-overlap scoring. The gated figure was measured after a vector-index rebuild that the earlier numbers predate, so the comparison spans a changed index. Treat these as directional, not decisive.
+
+The full study — dual-track evaluation, per-component ablations, and what it implies about adaptive context for small models generally — is published:
+
+**[The Personalization Paradox: When Adaptive Context Hurts Small Language Models](https://doi.org/10.5281/zenodo.18818890)** · DOI `10.5281/zenodo.18818890`
+
+> The takeaway generalizes past this project: for a small model, retrieved context is not free. Every irrelevant chunk is adversarial context, and a system that cannot decline to personalize will underperform the model it was built on top of.
 
 ## Architecture
 
